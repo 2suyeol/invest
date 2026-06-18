@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>페이퍼 거래소 — 모의 투자</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  :root{
+    --bg:#0E1116; --surface:#161B22; --surface2:#1C232E; --line:#262E3A;
+    --text:#E6E9EF; --muted:#8A94A6; --up:#2BD673; --down:#FF5C5C;
+    --gold:#F5B642; --goldDim:#5A4A1E;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--text);min-height:100vh;
+    font-family:"Pretendard",system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:ui-monospace,"SFMono-Regular",Menlo,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  input{font-family:inherit}
+  .up{color:var(--up)} .down{color:var(--down)} .muted{color:var(--muted)} .gold{color:var(--gold)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px}
+  .btn-primary{background:var(--gold);color:#1A1407;font-weight:800;border-radius:12px;padding:14px;width:100%;transition:transform .05s}
+  .btn-primary:active{transform:scale(.97)}
+  .pill{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:6px 12px}
+  .field{width:100%;margin-top:8px;padding:13px 14px;border-radius:12px;background:var(--bg);
+    border:1px solid var(--line);color:var(--text);font-size:15px;outline:none}
+  .field:focus{border-color:var(--goldDim)}
+  .center{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .tag{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--gold)}
+  .row{display:flex;align-items:center;justify-content:space-between}
+  .badge{padding:2px 8px;border-radius:6px;font-size:12px;font-weight:800}
+  .b-buy{background:rgba(43,214,115,.12);color:var(--up)}
+  .b-sell{background:rgba(255,92,92,.12);color:var(--down)}
+  .sm{font-size:12px} .lg{font-size:30px;font-weight:800}
+  .stock-row,.news-row,.hold-row,.hist-row{border-top:1px solid var(--line);padding:12px 0}
+  .tradebtn{padding:7px 13px;border-radius:9px;font-weight:800;font-size:14px;border:1px solid;transition:transform .05s}
+  .tradebtn:active{transform:scale(.95)}
+  .t-buy{background:rgba(43,214,115,.12);color:var(--up);border-color:rgba(43,214,115,.25)}
+  .t-sell{background:rgba(255,92,92,.12);color:var(--down);border-color:rgba(255,92,92,.25)}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;
+    justify-content:center;padding:16px;z-index:50}
+  .timerbar{height:4px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:10px}
+  .timerbar > i{display:block;height:100%;background:var(--gold);transition:width 1s linear}
+  .cols{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}
+  @media(max-width:760px){.cols{grid-template-columns:1fr}}
+  .ghost{background:var(--bg);border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}
+  .tier-chip{font-size:11px;font-weight:800;padding:2px 7px;border-radius:6px}
+  .tier1{background:rgba(138,148,166,.15);color:var(--muted)}
+  .tier2{background:rgba(245,182,66,.14);color:var(--gold)}
+  .tier3{background:rgba(43,214,115,.14);color:var(--up)}
+  .banner{background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* =====================================================================
+   페이퍼 거래소 — 개인 모드 (0단계 프로토타입)
+   - 정적 단일 파일. GitHub Pages에 index.html 하나만 올리면 동작.
+   - 계좌/유저는 localStorage 저장(데모용, 이 기기에서만).
+   - 1분마다 시세와 뉴스가 갱신됨. 뉴스는 코인 없이 자유롭게 열람.
+   - 끝이 없는 모의 투자(원할 때 '나가기'). 코인/미니게임/게임종료 순위는
+     멀티 모드 전용이라 여기엔 없음.
+   ===================================================================== */
+
+const START_CASH = 1_000_000;
+const ROUND_SECONDS = 60;
+
+/* ---- 종목 (업종별) ---- */
+const STOCKS = [
+  { t:"HBP",   name:"한빛제약",     sector:"제약",   p:184.2 },
+  { t:"GAON",  name:"가온항공",     sector:"항공",   p:42.6 },
+  { t:"TSE",   name:"태성에너지",   sector:"에너지", p:68.1 },
+  { t:"NURI",  name:"누리반도체",   sector:"기술",   p:311.4 },
+  { t:"MIDAM", name:"미담푸드",     sector:"식음료", p:13.4 },
+  { t:"GRNW",  name:"그린웨이브",   sector:"친환경", p:96.7 },
+  { t:"DSF",   name:"대성금융",     sector:"금융",   p:27.9 },
+  { t:"STAR",  name:"스타게이트",   sector:"우주항공", p:458.0 },
+];
+
+/* ---- 사건(이벤트): 업종별 영향 ---- */
+const BIG=0.18, MID=0.10, SML=0.05;
+const EVENTS = [
+  { id:"pandemic", label:"감염병 확산", impact:{제약:BIG, 항공:-BIG, 식음료:SML},
+    t3:"전국 감염병 비상 — 백신·치료제 수요 폭증, 제약주 강세 전망",
+    t2:"보건 당국 '감염병 주시'… 의료·제약 섹터에 시선 집중",
+    t1:"요즘 병원이 붐빈다는 소문이…" },
+  { id:"oilup", label:"유가 급등", impact:{에너지:BIG, 항공:-MID},
+    t3:"국제 유가 급등 — 에너지주 수혜, 항공주는 연료비 부담",
+    t2:"원유 시장 들썩… 에너지 관련주 주목",
+    t1:"기름값이 좀 오른 것 같다는 얘기" },
+  { id:"oildown", label:"유가 폭락", impact:{에너지:-BIG, 항공:MID},
+    t3:"유가 폭락 — 항공주 반등 기대, 에너지주 약세",
+    t2:"원유 약세 흐름… 운송·항공에 호재 가능성",
+    t1:"기름값 떨어졌다더라" },
+  { id:"ai", label:"AI 수요 폭발", impact:{기술:BIG, 친환경:SML},
+    t3:"AI 투자 러시 — 반도체·기술주 일제히 강세 전망",
+    t2:"빅테크 AI 경쟁 가열… 기술 섹터 관심 ↑",
+    t1:"AI가 또 화제라는데" },
+  { id:"rate_up", label:"금리 인상", impact:{금융:MID, 기술:-MID, 친환경:-SML},
+    t3:"기준금리 인상 — 금융주 수혜, 성장·기술주엔 부담",
+    t2:"중앙은행 매파 발언… 금리 민감 업종 주의",
+    t1:"금리 얘기가 또 나온다" },
+  { id:"space", label:"우주 개발 호재", impact:{우주항공:BIG, 기술:SML},
+    t3:"대형 우주 프로젝트 발표 — 우주항공주 급등 전망",
+    t2:"우주 산업 투자 확대 소식… 관련주 들썩",
+    t1:"로켓 발사 성공했다던데" },
+  { id:"green", label:"친환경 정책", impact:{친환경:BIG, 에너지:-MID},
+    t3:"대규모 친환경 보조금 발표 — 신재생주 강세, 화석연료주 약세",
+    t2:"정부 친환경 드라이브… 그린 섹터 주목",
+    t1:"환경 규제 강화한다는 말이…" },
+  { id:"food", label:"식량 위기", impact:{식음료:BIG, 항공:-SML},
+    t3:"국제 곡물가 급등 — 식음료주 가격 전가 기대",
+    t2:"공급망 차질로 식품 섹터 변동성 확대",
+    t1:"마트 물가가 무섭다" },
+  { id:"travel", label:"여행 수요 회복", impact:{항공:BIG, 식음료:SML},
+    t3:"여행 수요 폭발 — 항공주 본격 반등 전망",
+    t2:"성수기 예약 급증… 항공·여행 섹터 호조",
+    t1:"공항이 붐빈다는 소식" },
+  { id:"chip_reg", label:"반도체 규제", impact:{기술:-BIG},
+    t3:"반도체 수출 규제 강화 — 기술주 직격탄 우려",
+    t2:"규제 리스크 부각… 반도체 섹터 약세 가능성",
+    t1:"수출 규제 어쩌고 하던데" },
+  { id:"fin_crisis", label:"금융 불안", impact:{금융:-BIG, 기술:-SML, 에너지:-SML},
+    t3:"금융권 부실 우려 확산 — 금융주 급락, 전반적 위험 회피",
+    t2:"신용 경계감 확대… 금융 섹터 주의보",
+    t1:"은행이 좀 불안하다는 소문" },
+];
+const COMPANIES = ["한경데일리","머니투데이","시장의 눈","루머스"];
+
+/* ---------- 유틸 ---------- */
+const won = n => Math.round(n).toLocaleString("ko-KR");
+const price = n => n.toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct = n => (n>=0?"+":"")+(n*100).toFixed(2)+"%";
+const rand = (a,b)=>a+Math.random()*(b-a);
+const pick = arr => arr[Math.floor(Math.random()*arr.length)];
+const $ = id => document.getElementById(id);
+const ls = {
+  get(k){ try{return JSON.parse(localStorage.getItem(k));}catch{return null;} },
+  set(k,v){ localStorage.setItem(k,JSON.stringify(v)); },
+};
+
+/* ---------- 전역 상태 ---------- */
+let S = { screen:"auth", user:null };
+let G = null;          // 진행 중 게임 상태
+let timer = null;
+
+/* ===================================================================
+   인증
+   =================================================================== */
+function renderAuth(){
+  S.authTab = S.authTab || "login";
+  $("app").innerHTML = `
+  <div class="center"><div style="width:100%;max-width:380px">
+    <div style="text-align:center;margin-bottom:28px">
+      <div class="tag">P A P E R</div>
+      <h1 style="font-size:30px;font-weight:800;letter-spacing:-.02em;margin-top:6px">페이퍼 거래소</h1>
+      <p class="muted sm" style="margin-top:8px">뉴스를 읽고, 가상 종목에 투자하라.</p>
+    </div>
+    <div class="card" style="display:flex;padding:6px;margin-bottom:18px">
+      <button id="tab-login" style="flex:1;padding:10px;border-radius:11px;font-weight:700;
+        background:${S.authTab==="login"?"var(--surface2)":"transparent"};
+        color:${S.authTab==="login"?"var(--text)":"var(--muted)"}">로그인</button>
+      <button id="tab-signup" style="flex:1;padding:10px;border-radius:11px;font-weight:700;
+        background:${S.authTab==="signup"?"var(--surface2)":"transparent"};
+        color:${S.authTab==="signup"?"var(--text)":"var(--muted)"}">회원가입</button>
+    </div>
+    <div class="card" style="padding:22px">
+      <label class="muted sm" style="font-weight:600">아이디</label>
+      <input id="in-id" class="field" placeholder="trader01" />
+      <div style="height:14px"></div>
+      <label class="muted sm" style="font-weight:600">비밀번호</label>
+      <input id="in-pw" class="field" type="password" placeholder="••••" />
+      <div id="auth-err" class="down sm" style="margin-top:12px"></div>
+      <button id="auth-go" class="btn-primary" style="margin-top:16px">
+        ${S.authTab==="login"?"로그인":"가입하고 시작하기"}</button>
+    </div>
+    <p style="color:var(--goldDim);font-size:11px;margin-top:14px;text-align:center;line-height:1.6">
+      데모입니다. 비밀번호는 암호화 없이 저장되니 실제 비밀번호는 넣지 마세요.</p>
+  </div></div>`;
+
+  $("tab-login").onclick = ()=>{ S.authTab="login"; renderAuth(); };
+  $("tab-signup").onclick = ()=>{ S.authTab="signup"; renderAuth(); };
+  $("auth-go").onclick = doAuth;
+  $("in-pw").onkeydown = e => { if(e.key==="Enter") doAuth(); };
+}
+function doAuth(){
+  const id=$("in-id").value.trim(), pw=$("in-pw").value;
+  const err=$("auth-err");
+  if(id.length<2){ err.textContent="아이디는 2자 이상이어야 합니다."; return; }
+  if(pw.length<4){ err.textContent="비밀번호는 4자 이상이어야 합니다."; return; }
+  const users = ls.get("users")||{};
+  if(S.authTab==="signup"){
+    if(users[id]){ err.textContent="이미 존재하는 아이디입니다."; return; }
+    users[id]={pw}; ls.set("users",users);
+  } else {
+    if(!users[id]){ err.textContent="존재하지 않는 아이디입니다."; return; }
+    if(users[id].pw!==pw){ err.textContent="비밀번호가 일치하지 않습니다."; return; }
+  }
+  S.user=id; S.screen="mode"; render();
+}
+
+/* ===================================================================
+   모드 선택
+   =================================================================== */
+function renderMode(){
+  $("app").innerHTML = `
+  <div class="center"><div style="width:100%;max-width:440px">
+    <div class="row" style="margin-bottom:22px">
+      <div><div class="tag">PAPER 거래소</div>
+        <div style="font-size:20px;font-weight:800;margin-top:4px">${S.user}님, 환영합니다</div></div>
+      <button id="logout" class="pill muted sm">로그아웃</button>
+    </div>
+    <button id="m-solo" class="card" style="width:100%;text-align:left;padding:22px;margin-bottom:14px">
+      <div style="font-size:18px;font-weight:800">개인 모드</div>
+      <div class="muted sm" style="margin-top:6px">1분마다 바뀌는 시세와 뉴스를 보며 자유롭게 모의 투자합니다.</div>
+    </button>
+    <button id="m-multi" class="card" style="width:100%;text-align:left;padding:22px;opacity:.7">
+      <div class="row"><div style="font-size:18px;font-weight:800">멀티 모드</div>
+        <span class="tier-chip tier2">준비 중</span></div>
+      <div class="muted sm" style="margin-top:6px">친구들과 방을 만들어 라운드 대결. (2단계 · Supabase 연동 예정)</div>
+    </button>
+    <div class="card sm muted" style="padding:14px 16px;margin-top:18px;text-align:center">
+      🏆 전체 유저 랭킹은 1단계(Supabase 연동)에서 연결됩니다.
+    </div>
+  </div></div>`;
+  $("logout").onclick=()=>{ S.user=null; S.screen="auth"; render(); };
+  $("m-solo").onclick=startGame;
+  $("m-multi").onclick=()=>{ alert("멀티 모드는 실시간 서버(Supabase)가 필요해 2단계에서 추가됩니다.\n기획서.md에 전체 설계가 정리되어 있어요."); };
+}
+
+/* ===================================================================
+   게임 시작 & 라운드 엔진 (끝이 없는 개인 모드)
+   =================================================================== */
+function startGame(){
+  G = {
+    round:1, timeLeft:ROUND_SECONDS,
+    cash:START_CASH,
+    holdings:{}, history:[], lastResult:null,
+    market: STOCKS.map(s=>({...s, prev:s.p, base:s.p})),
+    events:[], news:[],
+  };
+  rollRound();              // 첫 라운드 뉴스 생성
+  S.screen="game"; render();
+  clearInterval(timer);
+  timer=setInterval(tick,1000);
+}
+
+function rollRound(){
+  // 활성 사건 1~2개 선택
+  const n = Math.random()<0.5?1:2;
+  const pool=[...EVENTS]; const active=[];
+  for(let i=0;i<n;i++){ active.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]); }
+  G.events=active;
+
+  // 뉴스 생성: 활성 사건 → 3·2·1단계(여러 신문사) + 가짜(헛소문) 1단계
+  // 개인 모드에선 전부 무료로 열람. 등급/신문사에 따라 '정보의 질'만 다름.
+  const news=[]; let nid=0;
+  active.forEach(ev=>{
+    news.push({id:nid++, tier:3, company:pick(COMPANIES.slice(0,3)), text:ev.t3});
+    news.push({id:nid++, tier:2, company:pick(COMPANIES.slice(0,3)), text:ev.t2});
+    news.push({id:nid++, tier:1, company:pick(COMPANIES), text:ev.t1});
+  });
+  // 헛소문(가짜) 1단계 1~2개 — 실제로는 일어나지 않을 사건의 흐릿한 소문
+  const fakes=pool.sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2));
+  fakes.forEach(ev=> news.push({id:nid++, tier:1, company:"루머스", text:ev.t1, fake:true}));
+  G.news = news.sort(()=>Math.random()-.5);
+}
+
+function tick(){
+  if(!G) return;
+  G.timeLeft--;
+  if(G.timeLeft<=0){ endRound(); return; }
+  const el=$("timer"); if(el) el.textContent=fmtTime(G.timeLeft);
+  const bar=$("timerfill"); if(bar) bar.style.width=(G.timeLeft/ROUND_SECONDS*100)+"%";
+}
+function fmtTime(s){ return `0:${String(s).padStart(2,"0")}`; }
+
+function endRound(){
+  // 사건 영향 + 노이즈로 주가 변동
+  const moves={};
+  G.market.forEach(s=>{
+    let delta=0;
+    G.events.forEach(ev=>{ if(ev.impact[s.sector]!=null) delta+=ev.impact[s.sector]; });
+    delta += rand(-0.04,0.04);
+    moves[s.t]=delta;
+    s.prev=s.p; s.p=Math.max(0.5, s.p*(1+delta));
+  });
+  G.lastResult = { round:G.round, events:G.events.map(e=>e.label), moves };
+
+  // 끝이 없음: 다음 라운드로 계속
+  G.round++; G.timeLeft=ROUND_SECONDS;
+  rollRound();
+  render();
+}
+
+function exitGame(){
+  if(!confirm("게임에서 나가시겠어요? 현재 진행 상황은 저장되지 않습니다.")) return;
+  clearInterval(timer); timer=null; G=null;
+  S.screen="mode"; render();
+}
+
+/* ---------- 거래 ---------- */
+function totalValue(){
+  let v=G.cash;
+  for(const[t,h] of Object.entries(G.holdings)){
+    const s=G.market.find(x=>x.t===t); if(s) v+=s.p*h.shares;
+  }
+  return v;
+}
+function execute(t, side, qty){
+  const s=G.market.find(x=>x.t===t); if(!s||qty<=0) return;
+  const cost=s.p*qty;
+  if(side==="buy"){
+    if(G.cash<cost){ alert("현금이 부족합니다."); return; }
+    G.cash-=cost;
+    const h=G.holdings[t]||{shares:0,avgCost:0};
+    const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns;
+    G.holdings[t]=h;
+  } else {
+    const h=G.holdings[t];
+    if(!h||h.shares<qty){ alert("보유 수량이 부족합니다."); return; }
+    G.cash+=cost; h.shares-=qty;
+    if(h.shares===0) delete G.holdings[t]; else G.holdings[t]=h;
+  }
+  G.history.unshift({id:Date.now(),t,side,qty,price:s.p,at:Date.now()});
+  G.history=G.history.slice(0,40);
+  closeModal(); render();
+}
+
+/* ===================================================================
+   게임 화면
+   =================================================================== */
+function renderGame(){
+  const total=totalValue(), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0;
+
+  $("app").innerHTML = `
+  <div class="wrap" style="padding-top:14px;padding-bottom:40px">
+    ${G.lastResult ? resultBanner() : ""}
+    <div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div>
+        <div class="tag">라운드 ${G.round} · 1분마다 시세·뉴스 변동</div>
+        <div style="display:flex;align-items:baseline;gap:12px;margin-top:2px">
+          <span class="mono lg">₩${won(total)}</span>
+          <span class="mono ${up?'up':'down'}">${pct(plp)} (${up?'+':''}${won(pl)})</span>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div class="mono" style="font-size:22px;font-weight:800" id="timer">${fmtTime(G.timeLeft)}</div>
+        <div class="muted sm">⏱ 다음 변동까지</div>
+      </div>
+    </div>
+    <div class="timerbar"><i id="timerfill" style="width:${G.timeLeft/ROUND_SECONDS*100}%"></i></div>
+
+    <div class="row" style="margin:14px 0 4px">
+      <span class="pill sm">현금 <b class="mono">₩${won(G.cash)}</b></span>
+      <button id="exit" class="pill sm muted">나가기</button>
+    </div>
+
+    <div class="cols" style="margin-top:14px">
+      <div>
+        ${marketCard()}
+        ${holdingsCard()}
+      </div>
+      <div>
+        ${newsCard()}
+        ${historyCard()}
+      </div>
+    </div>
+  </div>`;
+
+  $("exit").onclick=exitGame;
+  G.market.forEach(s=>{
+    const b=$("buy-"+s.t), sl=$("sell-"+s.t);
+    if(b) b.onclick=()=>openTrade(s.t,"buy");
+    if(sl) sl.onclick=()=>openTrade(s.t,"sell");
+  });
+}
+
+function resultBanner(){
+  const r=G.lastResult;
+  const top = Object.entries(r.moves).sort((a,b)=>b[1]-a[1]);
+  const best=top[0], worst=top[top.length-1];
+  const nm=t=>G.market.find(x=>x.t===t).name;
+  return `<div class="banner">
+    <div class="row"><b>📰 ${r.round}라운드 결과</b>
+      <span class="muted sm">사건: ${r.events.join(", ")}</span></div>
+    <div class="sm" style="margin-top:8px">
+      <span class="up">▲ ${nm(best[0])} ${pct(best[1])}</span> &nbsp;·&nbsp;
+      <span class="down">▼ ${nm(worst[0])} ${pct(worst[1])}</span>
+    </div></div>`;
+}
+
+function marketCard(){
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>시장</b><span class="muted sm">8종목 · 1분마다 변동</span></div>
+    ${G.market.map(s=>{
+      const ch=(s.p-s.base)/s.base, tick=s.p-s.prev, up=ch>=0;
+      return `<div class="row stock-row">
+        <div><div style="font-weight:700">${s.t} <span class="muted sm">${s.name}</span></div>
+          <div class="muted sm">${s.sector}</div></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="text-align:right">
+            <div class="mono ${tick>=0?'up':'down'}">${price(s.p)}</div>
+            <div class="mono sm ${up?'up':'down'}">${pct(ch)}</div></div>
+          <div style="display:flex;gap:6px">
+            <button id="buy-${s.t}" class="tradebtn t-buy">매수</button>
+            <button id="sell-${s.t}" class="tradebtn t-sell">매도</button></div>
+        </div></div>`;
+    }).join("")}
+  </div>`;
+}
+
+function holdingsCard(){
+  const hs=Object.entries(G.holdings);
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:6px"><b>보유 종목</b></div>
+    ${hs.length===0 ? `<div class="ghost">아직 보유한 종목이 없습니다.</div>` :
+    hs.map(([t,h])=>{
+      const s=G.market.find(x=>x.t===t), cur=s?s.p:h.avgCost;
+      const plv=(cur-h.avgCost)*h.shares, plp=(cur-h.avgCost)/h.avgCost, up=plv>=0;
+      return `<div class="row hold-row">
+        <div><div style="font-weight:700">${t}</div>
+          <div class="muted sm mono">${h.shares}주 · 평단 ${price(h.avgCost)}</div></div>
+        <div style="text-align:right">
+          <div class="mono">₩${won(cur*h.shares)}</div>
+          <div class="mono sm ${up?'up':'down'}">${up?'+':''}${won(plv)} (${pct(plp)})</div></div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function newsCard(){
+  const tierLabel={1:"1단계",2:"2단계",3:"3단계"};
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>뉴스</b>
+      <span class="muted sm">신문사·등급마다 정보의 질이 다름</span></div>
+    ${G.news.map(n=>`<div class="news-row">
+        <div class="row">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span class="tier-chip tier${n.tier}">${tierLabel[n.tier]}</span>
+            <span class="muted sm">${n.company}</span>
+          </div>
+        </div>
+        <div style="margin-top:7px;font-size:14px;line-height:1.5">${n.text}</div>
+      </div>`).join("")}
+  </div>`;
+}
+
+function historyCard(){
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:6px"><b>거래내역</b><span class="muted sm">${G.history.length}건</span></div>
+    ${G.history.length===0 ? `<div class="ghost">아직 거래가 없습니다.</div>` :
+    G.history.map(h=>`<div class="row hist-row">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="badge ${h.side==='buy'?'b-buy':'b-sell'}">${h.side==='buy'?'매수':'매도'}</span>
+        <b>${h.t}</b><span class="muted sm mono">${h.qty}주 @ ${price(h.price)}</span></div>
+    </div>`).join("")}
+  </div>`;
+}
+
+/* ---------- 거래 모달 ---------- */
+let modalState=null;
+function openTrade(t, side){
+  modalState={t,side,qty:1};
+  const wrap=document.createElement("div");
+  wrap.id="modal"; document.body.appendChild(wrap);
+  renderModal();
+}
+function closeModal(){ const m=$("modal"); if(m) m.remove(); modalState=null; }
+function renderModal(){
+  if(!modalState) return;
+  const {t,side,qty}=modalState;
+  const s=G.market.find(x=>x.t===t), buy=side==="buy";
+  const cost=s.p*qty, owned=G.holdings[t]?.shares||0, maxBuy=Math.floor(G.cash/s.p);
+  $("modal").innerHTML=`
+  <div class="modal-bg" id="mbg">
+    <div class="card" style="width:100%;max-width:360px;padding:22px" onclick="event.stopPropagation()">
+      <div class="row" style="margin-bottom:16px">
+        <div><div style="font-size:20px;font-weight:800">${s.t}
+          <span class="badge ${buy?'b-buy':'b-sell'}">${buy?'매수':'매도'}</span></div>
+          <div class="muted sm">${s.name}</div></div>
+        <button id="mx" class="muted" style="font-size:20px">✕</button></div>
+      <div class="row" style="margin-bottom:14px"><span class="muted sm">현재가</span>
+        <span class="mono" style="font-size:18px;font-weight:700">${price(s.p)}</span></div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="mm" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">−</button>
+        <input id="mq" class="field" style="text-align:center;margin-top:0" value="${qty}" />
+        <button id="mp" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">+</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:16px">
+        <button class="qbtn card sm" data-q="${buy?maxBuy:owned}" style="flex:1;padding:7px;color:var(--muted)">${buy?'최대':'전량'} (${buy?maxBuy:owned})</button>
+        <button class="qbtn card sm" data-q="${Math.floor((buy?maxBuy:owned)/2)}" style="flex:1;padding:7px;color:var(--muted)">절반</button>
+      </div>
+      <div class="row" style="margin-bottom:16px"><span class="muted sm">${buy?'필요 현금':'예상 수령액'}</span>
+        <span class="mono" style="font-size:16px;font-weight:700">₩${won(cost)}</span></div>
+      <button id="mgo" class="btn-primary" style="background:${buy?'var(--up)':'var(--down)'};color:#0E1116">
+        ${qty}주 ${buy?'매수':'매도'}</button>
+      <div class="muted sm" style="text-align:center;margin-top:10px">
+        ${buy?`보유 현금 ₩${won(G.cash)}`:`보유 수량 ${owned}주`}</div>
+    </div>
+  </div>`;
+  $("mbg").onclick=closeModal;
+  $("mx").onclick=closeModal;
+  $("mm").onclick=()=>{ modalState.qty=Math.max(1,qty-1); renderModal(); };
+  $("mp").onclick=()=>{ modalState.qty=qty+1; renderModal(); };
+  $("mq").oninput=e=>{ modalState.qty=Math.max(1,parseInt(e.target.value)||1); };
+  document.querySelectorAll(".qbtn").forEach(b=>b.onclick=()=>{ modalState.qty=Math.max(1,+b.dataset.q); renderModal(); });
+  $("mgo").onclick=()=>execute(t,side,modalState.qty);
+}
+
+/* ===================================================================
+   라우터
+   =================================================================== */
+function render(){
+  if(S.screen!=="game"){ clearInterval(timer); timer=null; }
+  switch(S.screen){
+    case "auth": return renderAuth();
+    case "mode": return renderMode();
+    case "game": return renderGame();
+  }
+}
+render();
+</script>
+</body>
+</html>
