@@ -11,6 +11,7 @@
     --bg:#0E1116; --surface:#161B22; --surface2:#1C232E; --line:#262E3A;
     --text:#E6E9EF; --muted:#8A94A6; --up:#2BD673; --down:#FF5C5C;
     --gold:#F5B642; --goldDim:#5A4A1E; --blue:#5B9DF5;
+    --buy:#FF5C5C; --sell:#5B9DF5;   /* 매수=빨강, 매도=파랑 */
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);min-height:100vh;
@@ -32,14 +33,15 @@
   .tag{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--gold)}
   .row{display:flex;align-items:center;justify-content:space-between}
   .badge{padding:2px 8px;border-radius:6px;font-size:12px;font-weight:800}
-  .b-buy{background:rgba(43,214,115,.12);color:var(--up)}
-  .b-sell{background:rgba(255,92,92,.12);color:var(--down)}
+  .b-buy{background:rgba(255,92,92,.12);color:var(--buy)}
+  .b-sell{background:rgba(91,157,245,.14);color:var(--sell)}
   .sm{font-size:12px} .lg{font-size:30px;font-weight:800}
   .stock-row,.news-row,.hold-row,.hist-row,.rank-row{border-top:1px solid var(--line);padding:12px 0}
   .tradebtn{padding:7px 13px;border-radius:9px;font-weight:800;font-size:14px;border:1px solid;transition:transform .05s}
   .tradebtn:active{transform:scale(.95)}
-  .t-buy{background:rgba(43,214,115,.12);color:var(--up);border-color:rgba(43,214,115,.25)}
-  .t-sell{background:rgba(255,92,92,.12);color:var(--down);border-color:rgba(255,92,92,.25)}
+  .t-buy{background:rgba(255,92,92,.12);color:var(--buy);border-color:rgba(255,92,92,.28)}
+  .t-sell{background:rgba(91,157,245,.14);color:var(--sell);border-color:rgba(91,157,245,.30)}
+  .minibtn{padding:5px 10px;border-radius:8px;font-weight:700;font-size:12px;border:1px solid var(--line);color:var(--muted);background:var(--bg)}
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;
     justify-content:center;padding:16px;z-index:50}
   .timerbar{height:4px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:10px}
@@ -51,14 +53,14 @@
   .tier1{background:rgba(138,148,166,.15);color:var(--muted)}
   .tier2{background:rgba(245,182,66,.14);color:var(--gold)}
   .tier3{background:rgba(43,214,115,.14);color:var(--up)}
-  .nav{position:sticky;top:0;z-index:20;background:rgba(14,17,22,.92);backdrop-filter:blur(8px);
-    border-bottom:1px solid var(--line)}
+  .nav{position:sticky;top:0;z-index:20;background:rgba(14,17,22,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
   .navtab{padding:8px 14px;border-radius:10px;font-weight:700;font-size:14px}
   .navtab.on{background:var(--surface2);color:var(--text)}
   .navtab.off{color:var(--muted)}
-  .spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--gold);
-    border-radius:50%;animation:sp 1s linear infinite;margin:0 auto}
+  .spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:sp 1s linear infinite;margin:0 auto}
   @keyframes sp{to{transform:rotate(360deg)}}
+  .newslock{filter:blur(4px);user-select:none}
+  .roundbig{font-size:46px;font-weight:800;letter-spacing:-.02em}
 </style>
 </head>
 <body>
@@ -67,21 +69,18 @@
 <script type="module">
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-/* =====================================================================
-   ⬇⬇⬇  여기 두 줄을 본인 Supabase 프로젝트 값으로 바꾸세요  ⬇⬇⬇
-   (대시보드 상단 'Connect' 버튼 또는 Settings → API Keys 에서 복사.
-    키는 Publishable key(sb_publishable_...) 또는 레거시 anon 키)
-   ===================================================================== */
 const SUPABASE_URL      = "https://mwjnxfhvrjhzvgrtmzvc.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_Hm9gLqAzT9STRB2xLXSFkA_ofiv1a7D";
-/* ===================================================================== */
 
 const CONFIGURED = SUPABASE_URL.includes(".supabase.co") && SUPABASE_ANON_KEY.length > 30;
 const sb = CONFIGURED ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-const START_CASH = 1_000_000;
-const TICK_SECONDS = 60;
-const BASE_RATE = 0.003;
+const START_CASH  = 1_000_000;
+const START_COINS = 5;
+const TICK_SECONDS = 60;          // 개인 모드 1분 주기
+const RESULT_SECONDS = 6;         // 멀티 라운드 결과/시작 표시 시간
+const NEWS_COST = {1:1, 2:3, 3:7};
+const LOAN_RATE = 0.05;           // 멀티 대출 라운드당 이자율
 
 const STOCKS = [
   { t:"HBP",   name:"한빛제약",     sector:"제약",     p:184.2 },
@@ -152,32 +151,71 @@ const price = n => n.toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFrac
 const pct = n => (n>=0?"+":"")+(n*100).toFixed(2)+"%";
 const rand = (a,b)=>a+Math.random()*(b-a);
 const pick = arr => arr[Math.floor(Math.random()*arr.length)];
-const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const $ = id => document.getElementById(id);
+const stockName = t => (STOCKS.find(x=>x.t===t)||{}).name||t;
+const stockSector = t => (STOCKS.find(x=>x.t===t)||{}).sector||"";
+
+/* 이자율: 사건에 따라 다양한 값(고정 아님) */
+function rollRate(activeObjs){
+  const up=activeObjs.some(e=>e.id==="rate_up"), down=activeObjs.some(e=>e.id==="rate_down");
+  if(up)   return +rand(0.006,0.011).toFixed(4);
+  if(down) return +rand(0.0005,0.0015).toFixed(4);
+  return +rand(0.002,0.004).toFixed(4);
+}
+/* 뉴스 생성 (단계/신문사/헛소문 포함, id 부여) */
+function buildNews(activeObjs, rate){
+  const used=activeObjs.map(e=>e.id), news=[]; let id=0;
+  activeObjs.forEach(ev=>{
+    news.push({id:id++, tier:3, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t3)});
+    news.push({id:id++, tier:2, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t2)});
+    news.push({id:id++, tier:1, company:pick(COMPANIES),          text:pick(ev.t1)});
+  });
+  EVENTS.filter(e=>!used.includes(e.id)).sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2))
+    .forEach(ev=> news.push({id:id++, tier:1, company:"루머스", text:pick(ev.t1)}));
+  if(Math.random()<0.5){ const w=rate>0.004?"오르는":rate<0.002?"내리는":"잠잠한";
+    news.push({id:id++, tier:2, company:pick(["한경데일리","머니투데이"]),
+      text:`은행 예금 금리, 최근 ${w} 분위기 — 현재 라운드당 약 ${(rate*100).toFixed(1)}% 수준`}); }
+  for(let i=news.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [news[i],news[j]]=[news[j],news[i]]; }
+  return news;
+}
+/* 사건 1~2개 선택 (직전과 다르게) */
+function pickEvents(lastIds){
+  let active;
+  for(let tn=0;tn<6;tn++){
+    const n=Math.random()<0.5?1:2, pool=[...EVENTS]; active=[];
+    for(let i=0;i<n;i++) active.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
+    const ids=active.map(e=>e.id).sort().join(",");
+    if(ids!==(lastIds||[]).slice().sort().join(",")) break;
+  }
+  return active;
+}
+/* 신용등급 (자금 기준) */
+function creditGrade(a){
+  if(a>=2_000_000) return {g:"A", limit:1_000_000};
+  if(a>=1_000_000) return {g:"B", limit:600_000};
+  if(a>=500_000)   return {g:"C", limit:300_000};
+  return {g:"D", limit:100_000};
+}
 
 /* ---------- 전역 상태 ---------- */
 let S = { screen:"loading", authTab:"login", user:null, nickname:null, tab:"stocks" };
 let G = null, timer = null, busy = false;
-let rtChannel = null;   // 멀티 모드 실시간 채널
-let MP = null, mpTimer = null, mpLastRound = 1, mpLastRate = 0.003; // 멀티 게임(내 지갑/타이머)
+let rtChannel = null;
+let MP = null, mpTimer = null, mpLastSettled = 0;
 
 /* ===================================================================
-   부팅 / 인증 (Supabase)
+   부팅 / 인증
    =================================================================== */
 async function boot(){
   if(!CONFIGURED){ S.screen="config"; render(); return; }
   S.screen="loading"; render();
-  try{
-    const { data } = await sb.auth.getSession();
-    if(data.session){ await onLoggedIn(data.session.user); return; }
-  }catch(e){}
+  try{ const { data } = await sb.auth.getSession(); if(data.session){ await onLoggedIn(data.session.user); return; } }catch(e){}
   S.screen="auth"; render();
 }
-
 async function doAuth(){
   const err=$("auth-err");
-  const email=$("in-email").value.trim();
-  const pw=$("in-pw").value;
+  const email=$("in-email").value.trim(), pw=$("in-pw").value;
   const nick=S.authTab==="signup" ? $("in-nick").value.trim() : null;
   if(!email.includes("@")){ err.textContent="올바른 이메일을 입력하세요."; return; }
   if(pw.length<6){ err.textContent="비밀번호는 6자 이상이어야 합니다."; return; }
@@ -188,146 +226,90 @@ async function doAuth(){
       const { data, error } = await sb.auth.signUp({ email, password:pw, options:{ data:{ nickname:nick } } });
       if(error) throw error;
       if(data.session){ await onLoggedIn(data.session.user); return; }
-      // 이메일 확인이 켜져 있는 경우
       busy=false; S.authTab="login"; renderAuth();
-      $("auth-err").textContent="가입 완료! 이메일 확인이 켜져 있으면 메일 확인 후 로그인하세요. (Supabase 설정에서 'Confirm email'을 끄면 즉시 로그인됩니다)";
+      $("auth-err").textContent="가입 완료! 이메일 확인이 켜져 있으면 메일 확인 후 로그인하세요.";
       return;
     } else {
       const { data, error } = await sb.auth.signInWithPassword({ email, password:pw });
-      if(error) throw error;
-      await onLoggedIn(data.user); return;
+      if(error) throw error; await onLoggedIn(data.user); return;
     }
-  }catch(e){
-    busy=false; renderAuth();
-    $("auth-err").textContent = translateAuthError(e.message||"오류가 발생했습니다.");
-  }
+  }catch(e){ busy=false; renderAuth(); $("auth-err").textContent=translateAuthError(e.message||"오류가 발생했습니다."); }
 }
 function translateAuthError(m){
   if(/Invalid login/i.test(m)) return "이메일 또는 비밀번호가 올바르지 않습니다.";
   if(/already registered|already exists/i.test(m)) return "이미 가입된 이메일입니다.";
-  if(/Email not confirmed/i.test(m)) return "이메일 확인이 필요합니다. (또는 Supabase에서 확인 끄기)";
+  if(/Email not confirmed/i.test(m)) return "이메일 확인이 필요합니다.";
   return m;
 }
-
 async function onLoggedIn(user){
-  S.user = user;
-  S.nickname = (user.user_metadata && user.user_metadata.nickname) || user.email.split("@")[0];
-  // 랭킹용 점수 행이 없으면 생성(있으면 건드리지 않음)
-  try{
-    await sb.from("scores").upsert(
-      { id:user.id, nickname:S.nickname },
-      { onConflict:"id", ignoreDuplicates:true }
-    );
-  }catch(e){}
+  S.user=user;
+  S.nickname=(user.user_metadata && user.user_metadata.nickname) || user.email.split("@")[0];
+  try{ await sb.from("scores").upsert({ id:user.id, nickname:S.nickname }, { onConflict:"id", ignoreDuplicates:true }); }catch(e){}
   busy=false; S.screen="mode"; render();
 }
-
 async function logout(){
   if(rtChannel){ try{ sb.removeChannel(rtChannel); }catch(e){} rtChannel=null; }
-  try{ await saveGame(true); }catch(e){}
+  if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
+  try{ await saveGame(); }catch(e){}
   clearInterval(timer); timer=null; G=null;
   try{ await sb.auth.signOut(); }catch(e){}
   S.user=null; S.nickname=null; S.screen="auth"; render();
 }
 
 /* ===================================================================
-   데이터 (저장 / 불러오기 / 랭킹)
+   데이터 (개인 모드 저장 / 글로벌 랭킹)
    =================================================================== */
-async function loadSave(){
-  const { data } = await sb.from("saves").select("state").eq("id",S.user.id).maybeSingle();
-  return data ? data.state : null;
-}
+async function loadSave(){ const { data }=await sb.from("saves").select("state").eq("id",S.user.id).maybeSingle(); return data?data.state:null; }
 async function saveGame(){
   if(!G||!S.user) return;
-  G.netWorth = netWorth();
-  const now = new Date().toISOString();
+  G.netWorth=soloNetWorth(); const now=new Date().toISOString();
   await sb.from("saves").upsert({ id:S.user.id, state:G, updated_at:now });
   await sb.from("scores").upsert({ id:S.user.id, nickname:S.nickname, net_worth:Math.round(G.netWorth), updated_at:now });
 }
-function saveGameBg(){ saveGame().catch(()=>{}); }   // 화면 막지 않는 백그라운드 저장
-async function fetchLeaderboard(){
-  const { data } = await sb.from("scores").select("nickname,net_worth").order("net_worth",{ascending:false}).limit(50);
-  return data || [];
-}
+function saveGameBg(){ saveGame().catch(()=>{}); }
+async function fetchLeaderboard(){ const { data }=await sb.from("scores").select("nickname,net_worth").order("net_worth",{ascending:false}).limit(50); return data||[]; }
 
 /* ===================================================================
-   화면: 설정 안내 / 로딩
+   화면: 설정/로딩/인증/모드
    =================================================================== */
-function renderConfig(){
-  $("app").innerHTML = `
-  <div class="center"><div class="card" style="max-width:460px;padding:26px">
-    <div class="tag">설정 필요</div>
-    <h2 style="font-size:20px;font-weight:800;margin:8px 0 12px">Supabase 연결이 필요합니다</h2>
-    <p class="muted sm" style="line-height:1.7">
-      index.html 상단의 <b class="gold">SUPABASE_URL</b> 과 <b class="gold">SUPABASE_ANON_KEY</b> 를
-      본인 프로젝트 값으로 바꿔주세요.<br><br>
-      함께 받은 <b>Supabase_연동_가이드.md</b> 를 따라 프로젝트 생성 → 키 복사 → 테이블 SQL 실행을
-      하면 됩니다.
-    </p>
-  </div></div>`;
-}
-function renderLoading(){
-  $("app").innerHTML = `<div class="center"><div style="text-align:center">
-    <div class="spin"></div><p class="muted sm" style="margin-top:14px">불러오는 중…</p></div></div>`;
-}
-
-/* ===================================================================
-   화면: 인증
-   =================================================================== */
+function renderConfig(){ $("app").innerHTML=`<div class="center"><div class="card" style="max-width:460px;padding:26px">
+  <div class="tag">설정 필요</div><h2 style="font-size:20px;font-weight:800;margin:8px 0 12px">Supabase 연결이 필요합니다</h2>
+  <p class="muted sm" style="line-height:1.7">상단 SUPABASE_URL / SUPABASE_ANON_KEY 를 본인 값으로 바꿔주세요.</p></div></div>`; }
+function renderLoading(){ $("app").innerHTML=`<div class="center"><div style="text-align:center"><div class="spin"></div><p class="muted sm" style="margin-top:14px">불러오는 중…</p></div></div>`; }
 function renderAuth(){
-  const signup = S.authTab==="signup";
-  $("app").innerHTML = `
-  <div class="center"><div style="width:100%;max-width:380px">
-    <div style="text-align:center;margin-bottom:28px">
-      <div class="tag">P A P E R</div>
+  const signup=S.authTab==="signup";
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:380px">
+    <div style="text-align:center;margin-bottom:28px"><div class="tag">P A P E R</div>
       <h1 style="font-size:30px;font-weight:800;letter-spacing:-.02em;margin-top:6px">페이퍼 거래소</h1>
-      <p class="muted sm" style="margin-top:8px">이메일로 로그인하고, 전 세계 랭킹에 도전하라.</p>
-    </div>
+      <p class="muted sm" style="margin-top:8px">이메일로 로그인하고, 전 세계 랭킹에 도전하라.</p></div>
     <div class="card" style="display:flex;padding:6px;margin-bottom:18px">
-      <button id="tab-login" style="flex:1;padding:10px;border-radius:11px;font-weight:700;
-        background:${!signup?"var(--surface2)":"transparent"};color:${!signup?"var(--text)":"var(--muted)"}">로그인</button>
-      <button id="tab-signup" style="flex:1;padding:10px;border-radius:11px;font-weight:700;
-        background:${signup?"var(--surface2)":"transparent"};color:${signup?"var(--text)":"var(--muted)"}">회원가입</button>
-    </div>
+      <button id="tab-login" style="flex:1;padding:10px;border-radius:11px;font-weight:700;background:${!signup?"var(--surface2)":"transparent"};color:${!signup?"var(--text)":"var(--muted)"}">로그인</button>
+      <button id="tab-signup" style="flex:1;padding:10px;border-radius:11px;font-weight:700;background:${signup?"var(--surface2)":"transparent"};color:${signup?"var(--text)":"var(--muted)"}">회원가입</button></div>
     <div class="card" style="padding:22px">
       <label class="muted sm" style="font-weight:600">이메일</label>
       <input id="in-email" class="field" type="email" placeholder="you@example.com" />
-      ${signup?`<div style="height:14px"></div>
-        <label class="muted sm" style="font-weight:600">닉네임 (랭킹에 표시)</label>
-        <input id="in-nick" class="field" placeholder="트레이더김" />`:""}
-      <div style="height:14px"></div>
-      <label class="muted sm" style="font-weight:600">비밀번호</label>
+      ${signup?`<div style="height:14px"></div><label class="muted sm" style="font-weight:600">닉네임 (랭킹에 표시)</label><input id="in-nick" class="field" placeholder="트레이더김" />`:""}
+      <div style="height:14px"></div><label class="muted sm" style="font-weight:600">비밀번호</label>
       <input id="in-pw" class="field" type="password" placeholder="6자 이상" />
       <div id="auth-err" class="down sm" style="margin-top:12px"></div>
-      <button id="auth-go" class="btn-primary" style="margin-top:16px" ${busy?"disabled":""}>
-        ${busy?"처리 중…":(signup?"가입하고 시작하기":"로그인")}</button>
-    </div>
+      <button id="auth-go" class="btn-primary" style="margin-top:16px" ${busy?"disabled":""}>${busy?"처리 중…":(signup?"가입하고 시작하기":"로그인")}</button></div>
   </div></div>`;
-  $("tab-login").onclick = ()=>{ S.authTab="login"; renderAuth(); };
-  $("tab-signup").onclick = ()=>{ S.authTab="signup"; renderAuth(); };
-  $("auth-go").onclick = doAuth;
-  const pw=$("in-pw"); if(pw) pw.onkeydown = e => { if(e.key==="Enter") doAuth(); };
+  $("tab-login").onclick=()=>{ S.authTab="login"; renderAuth(); };
+  $("tab-signup").onclick=()=>{ S.authTab="signup"; renderAuth(); };
+  $("auth-go").onclick=doAuth;
+  const pw=$("in-pw"); if(pw) pw.onkeydown=e=>{ if(e.key==="Enter") doAuth(); };
 }
-
-/* ===================================================================
-   화면: 모드 선택
-   =================================================================== */
 function renderMode(){
-  $("app").innerHTML = `
-  <div class="center"><div style="width:100%;max-width:440px">
-    <div class="row" style="margin-bottom:22px">
-      <div><div class="tag">PAPER 거래소</div>
-        <div style="font-size:20px;font-weight:800;margin-top:4px">${esc(S.nickname)}님, 환영합니다</div></div>
-      <button id="logout" class="pill muted sm">로그아웃</button>
-    </div>
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:440px">
+    <div class="row" style="margin-bottom:22px"><div><div class="tag">PAPER 거래소</div>
+      <div style="font-size:20px;font-weight:800;margin-top:4px">${esc(S.nickname)}님, 환영합니다</div></div>
+      <button id="logout" class="pill muted sm">로그아웃</button></div>
     <button id="m-solo" class="card" style="width:100%;text-align:left;padding:22px;margin-bottom:14px">
       <div style="font-size:18px;font-weight:800">개인 모드</div>
-      <div class="muted sm" style="margin-top:6px">1분마다 바뀌는 시세·뉴스를 보며 투자. 진행 상황은 계정에 저장되어 어디서든 이어집니다.</div>
-    </button>
+      <div class="muted sm" style="margin-top:6px">1분마다 바뀌는 시세·뉴스를 보며 투자. 진행 상황은 계정에 저장됩니다.</div></button>
     <button id="m-multi" class="card" style="width:100%;text-align:left;padding:22px">
       <div style="font-size:18px;font-weight:800">멀티 모드</div>
-      <div class="muted sm" style="margin-top:6px">친구들과 방을 만들어 실시간으로 대결합니다.</div>
-    </button>
+      <div class="muted sm" style="margin-top:6px">친구들과 방을 만들어 실시간으로 대결합니다.</div></button>
   </div></div>`;
   $("logout").onclick=logout;
   $("m-solo").onclick=startGame;
@@ -335,681 +317,12 @@ function renderMode(){
 }
 
 /* ===================================================================
-   멀티 모드 — 2단계 A: 로비 (방 / 참가코드 / 실시간 대기실)
+   공용 거래 모달 (개인/멀티)
    =================================================================== */
-function genCode(){
-  const ch="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let s="";
-  for(let i=0;i<6;i++) s+=ch[Math.floor(Math.random()*ch.length)];
-  return s;
-}
-function renderMpEntry(){
-  $("app").innerHTML = `
-  <div class="center"><div style="width:100%;max-width:420px">
-    <button id="back" class="muted sm" style="margin-bottom:16px">← 모드 선택</button>
-    <div style="font-size:22px;font-weight:800;margin-bottom:18px">멀티 모드</div>
-    <button id="create" class="card" style="width:100%;text-align:left;padding:22px;margin-bottom:14px">
-      <div style="font-size:18px;font-weight:800">방 만들기</div>
-      <div class="muted sm" style="margin-top:6px">새 방을 열고 친구들을 초대합니다. 내가 방장이 됩니다.</div>
-    </button>
-    <button id="join" class="card" style="width:100%;text-align:left;padding:22px">
-      <div style="font-size:18px;font-weight:800">방 참가</div>
-      <div class="muted sm" style="margin-top:6px">참가 코드를 입력해 친구의 방에 들어갑니다.</div>
-    </button>
-    <div id="join-box" style="margin-top:14px"></div>
-  </div></div>`;
-  $("back").onclick=()=>{ S.screen="mode"; render(); };
-  $("create").onclick=createRoom;
-  $("join").onclick=()=>{
-    $("join-box").innerHTML = `
-      <div class="card" style="padding:16px">
-        <input id="code-in" class="field" placeholder="참가 코드 (예: ABC123)" style="margin-top:0;text-transform:uppercase" />
-        <button id="join-go" class="btn-primary" style="margin-top:10px">입장</button>
-        <div id="join-err" class="down sm" style="margin-top:8px"></div>
-      </div>`;
-    $("join-go").onclick=()=>joinRoom($("code-in").value.trim().toUpperCase());
-    $("code-in").focus();
-    $("code-in").onkeydown=e=>{ if(e.key==="Enter") joinRoom($("code-in").value.trim().toUpperCase()); };
-  };
-}
-
-async function createRoom(){
-  S.screen="loading"; render();
-  let room=null, tries=0;
-  while(tries++<5){
-    const { data, error } = await sb.from("rooms")
-      .insert({ code:genCode(), host_id:S.user.id, status:"waiting", total_rounds:10 })
-      .select().single();
-    if(!error){ room=data; break; }
-  }
-  if(!room){ alert("방 생성에 실패했습니다. SQL(테이블/권한)이 적용됐는지 확인해주세요."); S.screen="mp_entry"; render(); return; }
-  await sb.from("room_players").insert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname });
-  S.room=room; S.isHost=true;
-  await enterRoom();
-}
-async function joinRoom(code){
-  const errEl=$("join-err");
-  if(!code){ if(errEl) errEl.textContent="코드를 입력하세요."; return; }
-  const { data:room } = await sb.from("rooms").select("*").eq("code",code).maybeSingle();
-  if(!room){ if(errEl) errEl.textContent="그런 코드의 방이 없습니다."; return; }
-  if(room.status!=="waiting"){ if(errEl) errEl.textContent="이미 시작했거나 종료된 방입니다."; return; }
-  S.screen="loading"; render();
-  await sb.from("room_players").upsert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname }, { onConflict:"room_id,user_id" });
-  S.room=room; S.isHost=(room.host_id===S.user.id);
-  await enterRoom();
-}
-async function enterRoom(){
-  await refreshPlayers();
-  subscribeRoom(S.room.id);
-  S.screen="mp_room"; render();
-}
-async function refreshPlayers(){
-  const { data } = await sb.from("room_players").select("user_id,nickname,joined_at,cash,bank,holdings").eq("room_id",S.room.id).order("joined_at");
-  S.players = data || [];
-  if(S.screen==="mp_room"){
-    const el=$("playerList"); if(el) el.innerHTML=playerListHtml();
-    const c=$("pcount"); if(c) c.textContent=S.players.length+"명";
-  }
-  if(S.screen==="mp_game" && S.mpTab==="rank"){
-    const el=$("mpRankList"); if(el) el.innerHTML=mpRankListHtml();
-  }
-}
-function subscribeRoom(roomId){
-  if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
-  rtChannel = sb.channel("room-"+roomId)
-    .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:"room_id=eq."+roomId}, ()=>refreshPlayers())
-    .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:"id=eq."+roomId}, p=>onRoomUpdate(p.new))
-    .subscribe();
-}
-function onRoomUpdate(room){
-  S.room=room;
-  if(room.status==="ended"){ alert("방장이 방을 닫았습니다."); leaveRoomLocal(); return; }
-  if(room.status==="finished"){
-    if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
-    S.screen="mp_result"; render(); return;
-  }
-  if(room.status==="playing"){
-    if(S.screen!=="mp_game"){ enterMpGame(); return; }
-    const g=room.game;
-    if(g && g.round>mpLastRound){           // 라운드가 넘어감 → 내 예금 이자 지급
-      if(MP && MP.bank>0){ MP.bank += MP.bank*mpLastRate; mpSavePortfolio(); }
-      mpLastRound=g.round;
-    }
-    if(g) mpLastRate=g.rate;
-    render(); return;
-  }
-  if(S.screen==="mp_room") render();          // 대기실 갱신
-}
-
-/* ---- 멀티 게임 진행 (방장이 시세/뉴스를 계산해 서버에 기록) ---- */
-function mpRoll(g){
-  let active;
-  for(let tn=0; tn<6; tn++){
-    const n=Math.random()<0.5?1:2; const pool=[...EVENTS]; active=[];
-    for(let i=0;i<n;i++) active.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
-    const ids=active.map(e=>e.id).sort().join(",");
-    if(ids!==(g.lastIds||[]).slice().sort().join(",")) break;
-  }
-  let rate=BASE_RATE;
-  active.forEach(ev=>{ if(ev.id==="rate_up") rate=0.006; else if(ev.id==="rate_down") rate=0.001; });
-  const used=active.map(e=>e.id), news=[];
-  active.forEach(ev=>{
-    news.push({tier:3, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t3)});
-    news.push({tier:2, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t2)});
-    news.push({tier:1, company:pick(COMPANIES),          text:pick(ev.t1)});
-  });
-  EVENTS.filter(e=>!used.includes(e.id)).sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2))
-    .forEach(ev=> news.push({tier:1, company:"루머스", text:pick(ev.t1)}));
-  if(Math.random()<0.5){ const w=rate>BASE_RATE?"오르는":rate<BASE_RATE?"내리는":"잠잠한";
-    news.push({tier:2, company:pick(["한경데일리","머니투데이"]),
-      text:`은행 예금 금리, 최근 ${w} 분위기 — 현재 분당 약 ${(rate*100).toFixed(1)}% 수준`}); }
-  news.sort(()=>Math.random()-.5);
-  return { events:used, news, rate, ids:used };
-}
-async function startMpGame(){
-  const rounds = +(($("roundSel")&&$("roundSel").value)||10);
-  const g={ round:1, total:rounds, market:STOCKS.map(s=>({t:s.t,p:s.p,prev:s.p})), lastIds:[] };
-  const roll=mpRoll(g); g.events=roll.events; g.news=roll.news; g.rate=roll.rate; g.lastIds=roll.ids;
-  g.endsAt=Date.now()+TICK_SECONDS*1000;
-  await sb.from("rooms").update({ status:"playing", total_rounds:rounds, game:g }).eq("id",S.room.id);
-  S.room.status="playing"; S.room.total_rounds=rounds; S.room.game=g;
-  await enterMpGame();
-}
-async function enterMpGame(){
-  await mpLoadPortfolio();
-  mpLastRound = S.room.game.round;
-  mpLastRate  = S.room.game.rate;
-  if(!mpTimer) mpTimer=setInterval(mpTick,1000);
-  S.mpTab="stocks"; S.screen="mp_game"; render();
-}
-function mpTick(){
-  const g=S.room&&S.room.game; if(!g||S.room.status!=="playing") return;
-  if(S.isHost && Date.now()>=g.endsAt){ mpAdvance(); return; }
-  const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
-  const el=$("mtimer"); if(el) el.textContent=fmtTime(left);
-  const bar=$("mtimerfill"); if(bar) bar.style.width=Math.max(0,Math.min(100,(g.endsAt-Date.now())/(TICK_SECONDS*1000)*100))+"%";
-}
-async function mpAdvance(){
-  const g=JSON.parse(JSON.stringify(S.room.game));
-  const evs=g.events.map(id=>EVENTS.find(e=>e.id===id)).filter(Boolean);
-  g.market.forEach(s=>{
-    const stock=STOCKS.find(x=>x.t===s.t); let d=0;
-    evs.forEach(ev=>{ if(ev.impact[stock.sector]!=null) d+=ev.impact[stock.sector]; });
-    d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5, s.p*(1+d));
-  });
-  if(g.round>=g.total){
-    await sb.from("rooms").update({ status:"finished", game:g }).eq("id",S.room.id);
-    S.room.status="finished"; S.room.game=g;
-    if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
-    S.screen="mp_result"; render(); return;
-  }
-  g.round++;
-  const roll=mpRoll(g); g.events=roll.events; g.news=roll.news; g.rate=roll.rate; g.lastIds=roll.ids;
-  g.endsAt=Date.now()+TICK_SECONDS*1000;
-  S.room.game=g;   // 즉시 반영해 다음 tick의 중복 진행 방지
-  await sb.from("rooms").update({ game:g }).eq("id",S.room.id);
-}
-/* ---- 내 지갑 (room_players 행) ---- */
-async function mpLoadPortfolio(){
-  const { data } = await sb.from("room_players").select("cash,bank,holdings")
-    .eq("room_id",S.room.id).eq("user_id",S.user.id).maybeSingle();
-  MP = data ? { cash:Number(data.cash), bank:Number(data.bank||0), holdings:data.holdings||{} }
-            : { cash:START_CASH, bank:0, holdings:{} };
-}
-async function mpSavePortfolio(){
-  if(!MP) return;
-  try{ await sb.from("room_players").update({ cash:Math.round(MP.cash), bank:Math.round(MP.bank), holdings:MP.holdings })
-    .eq("room_id",S.room.id).eq("user_id",S.user.id); }catch(e){}
-}
-function mpNetWorth(pf){
-  let v=Number(pf.cash||0)+Number(pf.bank||0);
-  const g=S.room.game;
-  for(const[t,h] of Object.entries(pf.holdings||{})){ const s=g.market.find(x=>x.t===t); if(s&&h) v+=s.p*h.shares; }
-  return v;
-}
-function mpExecute(t,side,qty){
-  const g=S.room.game, s=g.market.find(x=>x.t===t); if(!s||qty<=0) return;
-  const cost=s.p*qty;
-  if(side==="buy"){
-    if(MP.cash<cost){ alert("현금이 부족합니다."); return; }
-    MP.cash-=cost; const h=MP.holdings[t]||{shares:0,avgCost:0};
-    const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; MP.holdings[t]=h;
-  } else {
-    const h=MP.holdings[t]; if(!h||h.shares<qty){ alert("보유 수량이 부족합니다."); return; }
-    MP.cash+=cost; h.shares-=qty; if(h.shares===0) delete MP.holdings[t]; else MP.holdings[t]=h;
-  }
-  closeModal(); mpSavePortfolio(); render();
-}
-function mpDeposit(amt){ amt=Math.floor(amt); if(!amt||amt<=0) return;
-  if(MP.cash<amt){ alert("현금이 부족합니다."); return; } MP.cash-=amt; MP.bank+=amt; mpSavePortfolio(); render(); }
-function mpWithdraw(amt){ amt=Math.floor(amt); if(!amt||amt<=0) return;
-  if(MP.bank<amt){ alert("예치금이 부족합니다."); return; } MP.bank-=amt; MP.cash+=amt; mpSavePortfolio(); render(); }
-function leaveRoomLocal(){
-  if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
-  if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
-  MP=null; S.room=null; S.players=[]; S.isHost=false; S.screen="mode"; render();
-}
-async function leaveRoom(){
-  const roomId=S.room&&S.room.id;
-  try{
-    if(S.isHost){ await sb.from("rooms").update({status:"ended"}).eq("id",roomId); }
-    await sb.from("room_players").delete().eq("room_id",roomId).eq("user_id",S.user.id);
-  }catch(e){}
-  leaveRoomLocal();
-}
-function playerListHtml(){
-  return S.players.map(p=>`<div class="row rank-row">
-    <div style="display:flex;align-items:center;gap:8px">
-      <b>${esc(p.nickname)}</b>
-      ${p.user_id===S.room.host_id?'<span class="tier-chip tier2">방장</span>':''}
-      ${p.user_id===S.user.id?'<span class="muted sm">(나)</span>':''}
-    </div></div>`).join("");
-}
-function renderMpRoom(){
-  $("app").innerHTML = `
-  <div class="center"><div style="width:100%;max-width:440px">
-    <div class="row" style="margin-bottom:18px">
-      <div style="font-size:20px;font-weight:800">대기실</div>
-      <button id="leave" class="pill muted sm">나가기</button>
-    </div>
-    <div class="card" style="padding:20px;text-align:center;margin-bottom:16px">
-      <div class="muted sm">참가 코드</div>
-      <div class="mono" style="font-size:34px;font-weight:800;letter-spacing:.15em;margin-top:4px">${S.room.code}</div>
-      <button id="copy" class="pill sm gold" style="margin-top:8px">코드 복사</button>
-    </div>
-    <div class="card" style="padding:18px;margin-bottom:16px">
-      <div class="row" style="margin-bottom:6px"><b>참가자</b><span class="muted sm" id="pcount">${S.players.length}명</span></div>
-      <div id="playerList">${playerListHtml()}</div>
-    </div>
-    ${S.isHost ? `
-      <div class="card" style="padding:18px;margin-bottom:14px">
-        <div class="row"><span class="muted sm">라운드 수</span>
-          <span class="mono" id="rval" style="font-size:20px;font-weight:800">10</span></div>
-        <input id="roundSel" type="range" min="10" max="30" value="10" style="width:100%;margin-top:8px;accent-color:var(--gold)" />
-      </div>
-      <button id="start" class="btn-primary">게임 시작</button>`
-    : `<div class="ghost">방장이 시작하기를 기다리는 중…</div>`}
-  </div></div>`;
-  $("leave").onclick=leaveRoom;
-  $("copy").onclick=()=>{ try{navigator.clipboard.writeText(S.room.code);}catch(e){} $("copy").textContent="복사됨!"; };
-  if(S.isHost){
-    const sel=$("roundSel"); sel.oninput=()=>$("rval").textContent=sel.value;
-    $("start").onclick=startMpGame;
-  }
-}
-function renderMpGame(){
-  S.mpTab = S.mpTab || "stocks";
-  const tabBtn=(id,label)=>`<button class="navtab ${S.mpTab===id?'on':'off'}" data-mtab="${id}">${label}</button>`;
-  const nav=`<div class="nav"><div class="wrap row" style="padding:10px 16px">
-    <div style="display:flex;align-items:center;gap:10px">
-      <span class="tag">방 ${S.room.code}</span>
-      <div style="display:flex;gap:4px">${tabBtn("stocks","주식")}${tabBtn("rank","랭킹")}</div>
-    </div>
-    <button id="leave2" class="pill sm muted">나가기</button>
-  </div></div>`;
-  const content = S.mpTab==="rank" ? mpRankView() : mpStocksView();
-  $("app").innerHTML = nav + `<div class="wrap" style="padding-top:14px;padding-bottom:40px">${content}</div>`;
-  document.querySelectorAll(".navtab").forEach(b=>b.onclick=()=>{ S.mpTab=b.dataset.mtab; render(); });
-  $("leave2").onclick=leaveRoom;
-  if(S.mpTab==="stocks") mpBindStocks();
-}
-function mpStocksView(){
-  const g=S.room.game; if(!g||!MP) return `<div class="ghost">불러오는 중…</div>`;
-  const total=mpNetWorth(MP), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0;
-  const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
-  return `
-    <div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
-      <div><div class="muted sm">내 총자산 · 라운드 ${g.round}/${g.total}</div>
-        <div style="display:flex;align-items:baseline;gap:12px">
-          <span class="mono lg">₩${won(total)}</span>
-          <span class="mono ${up?'up':'down'}">${pct(plp)}</span></div></div>
-      <div style="text-align:right">
-        <div class="mono" style="font-size:22px;font-weight:800" id="mtimer">${fmtTime(left)}</div>
-        <div class="muted sm">⏱ 라운드 종료까지</div></div>
-    </div>
-    <div class="timerbar"><i id="mtimerfill" style="width:${left/TICK_SECONDS*100}%"></i></div>
-    <div class="cols" style="margin-top:14px">
-      <div>${mpMarketCard()}${mpHoldingsCard()}</div>
-      <div>${mpBankCard()}${mpNewsCard()}</div>
-    </div>`;
-}
-function mpBindStocks(){
-  S.room.game.market.forEach(s=>{
-    const b=$("mbuy-"+s.t), sl=$("msell-"+s.t);
-    if(b) b.onclick=()=>openTrade(s.t,"buy",true);
-    if(sl) sl.onclick=()=>openTrade(s.t,"sell",true);
-  });
-  const dep=$("mbankDep"), wd=$("mbankWd");
-  if(dep) dep.onclick=()=>mpDeposit(+$("mbankAmt").value);
-  if(wd) wd.onclick=()=>mpWithdraw(+$("mbankAmt").value);
-}
-function mpMarketCard(){
-  const g=S.room.game;
-  return `<div class="card" style="padding:18px;margin-bottom:16px">
-    <div class="row" style="margin-bottom:6px"><b>시장</b><span class="muted sm">모두 같은 시세 · 라운드마다 변동</span></div>
-    ${g.market.map(s=>{
-      const st=STOCKS.find(x=>x.t===s.t), tk=s.p-s.prev;
-      return `<div class="row stock-row">
-        <div><div style="font-weight:700">${s.t} <span class="muted sm">${st.name}</span></div>
-          <div class="muted sm">${st.sector}</div></div>
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="text-align:right"><div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div></div>
-          <div style="display:flex;gap:6px">
-            <button id="mbuy-${s.t}" class="tradebtn t-buy">매수</button>
-            <button id="msell-${s.t}" class="tradebtn t-sell">매도</button></div>
-        </div></div>`;
-    }).join("")}</div>`;
-}
-function mpHoldingsCard(){
-  const g=S.room.game, hs=Object.entries(MP.holdings);
-  return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:6px"><b>보유 종목</b></div>
-    ${hs.length===0 ? `<div class="ghost">아직 보유한 종목이 없습니다.</div>` :
-    hs.map(([t,h])=>{
-      const s=g.market.find(x=>x.t===t), cur=s?s.p:h.avgCost;
-      const plv=(cur-h.avgCost)*h.shares, plp=(cur-h.avgCost)/h.avgCost, up=plv>=0;
-      return `<div class="row hold-row">
-        <div><div style="font-weight:700">${t}</div>
-          <div class="muted sm mono">${h.shares}주 · 평단 ${price(h.avgCost)}</div></div>
-        <div style="text-align:right"><div class="mono">₩${won(cur*h.shares)}</div>
-          <div class="mono sm ${up?'up':'down'}">${up?'+':''}${won(plv)} (${pct(plp)})</div></div>
-      </div>`;
-    }).join("")}</div>`;
-}
-function mpBankCard(){
-  const g=S.room.game;
-  return `<div class="card" style="padding:18px;margin-bottom:16px">
-    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b>
-      <span class="blue sm mono">이자 1라운드당 ${(g.rate*100).toFixed(1)}%</span></div>
-    <div class="row" style="margin-bottom:10px"><span class="muted sm">예치금</span>
-      <span class="mono" style="font-size:17px;font-weight:700">₩${won(MP.bank||0)}</span></div>
-    <input id="mbankAmt" class="field" type="number" placeholder="금액 입력" style="margin-top:0" />
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button id="mbankDep" class="tradebtn t-buy" style="flex:1;text-align:center">입금</button>
-      <button id="mbankWd" class="tradebtn t-sell" style="flex:1;text-align:center">출금</button></div>
-  </div>`;
-}
-function mpNewsCard(){
-  const g=S.room.game, tl={1:"1단계",2:"2단계",3:"3단계"};
-  return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:6px"><b>뉴스</b><span class="muted sm">방 전체 공통</span></div>
-    ${(g.news||[]).map(n=>`<div class="news-row">
-        <div style="display:flex;align-items:center;gap:7px">
-          <span class="tier-chip tier${n.tier}">${tl[n.tier]}</span>
-          <span class="muted sm">${n.company}</span></div>
-        <div style="margin-top:7px;font-size:14px;line-height:1.5">${n.text}</div>
-      </div>`).join("")}</div>`;
-}
-function mpRankListHtml(){
-  const rows=[...S.players].map(p=>({nick:p.nickname, uid:p.user_id, nw:mpNetWorth(p)})).sort((a,b)=>b.nw-a.nw);
-  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
-  return rows.map((r,i)=>{
-    const me=r.uid===S.user.id;
-    return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
-        <b>${esc(r.nick)}${me?' (나)':''}</b></div>
-      <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`;
-  }).join("");
-}
-function mpRankView(){
-  return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:6px"><b>실시간 순위</b><span class="muted sm">방 ${S.room.code}</span></div>
-    <div id="mpRankList">${mpRankListHtml()}</div>
-  </div>`;
-}
-function renderMpResult(){
-  const rows=[...S.players].map(p=>({nick:p.nickname, uid:p.user_id, nw:mpNetWorth(p)})).sort((a,b)=>b.nw-a.nw);
-  const myRank=rows.findIndex(r=>r.uid===S.user.id)+1;
-  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
-  $("app").innerHTML = `
-  <div class="center"><div style="width:100%;max-width:440px;text-align:center">
-    <div class="tag">게임 종료</div>
-    <div style="font-size:44px;margin:10px 0">${myRank===1?'👑':'🏁'}</div>
-    <div style="font-size:18px;font-weight:800">최종 순위 ${myRank}위 / ${rows.length}명</div>
-    <div class="card" style="padding:18px;margin-top:18px;text-align:left">
-      ${rows.map((r,i)=>{ const me=r.uid===S.user.id;
-        return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
-            <b>${esc(r.nick)}${me?' (나)':''}</b></div>
-          <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`;
-      }).join("")}
-    </div>
-    <button id="leave3" class="btn-primary" style="margin-top:20px">나가기</button>
-  </div></div>`;
-  $("leave3").onclick=leaveRoom;
-}
-
-/* ===================================================================
-   게임 시작 / 엔진
-   =================================================================== */
-async function startGame(){
-  S.screen="loading"; render();
-  let st=null;
-  try{ st=await loadSave(); }catch(e){}
-  if(st && st.market){
-    G=st;
-    if(G.bank==null) G.bank=0;
-    if(G.rate==null) G.rate=BASE_RATE;
-    if(!G.events||!G.events.length) rollMarket();
-  } else {
-    G={ cash:START_CASH, bank:0, rate:BASE_RATE, holdings:{}, history:[],
-        market:STOCKS.map(s=>({...s, prev:s.p, base:s.p})),
-        events:[], news:[], lastEventIds:[], timeLeft:TICK_SECONDS };
-    rollMarket();
-  }
-  S.tab="stocks"; S.screen="game"; render();
-  clearInterval(timer); timer=setInterval(tick,1000);
-}
-function netWorth(){
-  let v=G.cash+(G.bank||0);
-  for(const[t,h] of Object.entries(G.holdings)){
-    const s=G.market.find(x=>x.t===t); if(s) v+=s.p*h.shares;
-  }
-  return v;
-}
-function rollMarket(){
-  let active;
-  for(let tryN=0; tryN<6; tryN++){
-    const n=Math.random()<0.5?1:2;
-    const pool=[...EVENTS]; active=[];
-    for(let i=0;i<n;i++) active.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
-    const ids=active.map(e=>e.id).sort().join(",");
-    if(ids!==(G.lastEventIds||[]).slice().sort().join(",")) break;
-  }
-  G.events=active; G.lastEventIds=active.map(e=>e.id);
-  let r=BASE_RATE;
-  active.forEach(ev=>{ if(ev.id==="rate_up") r=0.006; else if(ev.id==="rate_down") r=0.001; });
-  G.rate=r;
-  const used=active.map(e=>e.id), news=[]; let nid=0;
-  active.forEach(ev=>{
-    news.push({id:nid++, tier:3, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t3)});
-    news.push({id:nid++, tier:2, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t2)});
-    news.push({id:nid++, tier:1, company:pick(COMPANIES),          text:pick(ev.t1)});
-  });
-  EVENTS.filter(e=>!used.includes(e.id)).sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2))
-    .forEach(ev=> news.push({id:nid++, tier:1, company:"루머스", text:pick(ev.t1)}));
-  if(Math.random()<0.5){
-    const word=G.rate>BASE_RATE?"오르는":G.rate<BASE_RATE?"내리는":"잠잠한";
-    news.push({id:nid++, tier:2, company:pick(["한경데일리","머니투데이"]),
-      text:`은행 예금 금리, 최근 ${word} 분위기 — 현재 분당 약 ${(G.rate*100).toFixed(1)}% 수준`});
-  }
-  G.news=news.sort(()=>Math.random()-.5);
-}
-function tick(){
-  if(!G) return;
-  G.timeLeft--;
-  if(G.timeLeft<=0){ marketTick(); return; }
-  const el=$("timer"); if(el) el.textContent=fmtTime(G.timeLeft);
-  const bar=$("timerfill"); if(bar) bar.style.width=(G.timeLeft/TICK_SECONDS*100)+"%";
-}
-function fmtTime(s){ return `0:${String(s).padStart(2,"0")}`; }
-function marketTick(){
-  G.market.forEach(s=>{
-    let delta=0;
-    G.events.forEach(ev=>{ if(ev.impact[s.sector]!=null) delta+=ev.impact[s.sector]; });
-    delta+=rand(-0.04,0.04);
-    s.prev=s.p; s.p=Math.max(0.5, s.p*(1+delta));
-  });
-  if(G.bank>0) G.bank += G.bank*G.rate;
-  rollMarket();
-  G.timeLeft=TICK_SECONDS;
-  saveGameBg();
-  render();
-}
-async function exitGame(){
-  if(!confirm("나가시겠어요? 진행 상황은 계정에 저장됩니다.")) return;
-  S.screen="loading"; render();
-  try{ await saveGame(); }catch(e){}
-  clearInterval(timer); timer=null;
-  S.screen="mode"; render();
-}
-
-/* ---------- 거래 / 은행 ---------- */
-function execute(t, side, qty){
-  const s=G.market.find(x=>x.t===t); if(!s||qty<=0) return;
-  const cost=s.p*qty;
-  if(side==="buy"){
-    if(G.cash<cost){ alert("현금이 부족합니다."); return; }
-    G.cash-=cost;
-    const h=G.holdings[t]||{shares:0,avgCost:0};
-    const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns;
-    G.holdings[t]=h;
-  } else {
-    const h=G.holdings[t];
-    if(!h||h.shares<qty){ alert("보유 수량이 부족합니다."); return; }
-    G.cash+=cost; h.shares-=qty;
-    if(h.shares===0) delete G.holdings[t]; else G.holdings[t]=h;
-  }
-  G.history.unshift({id:Date.now(),t,side,qty,price:s.p,at:Date.now()});
-  G.history=G.history.slice(0,40);
-  closeModal(); saveGameBg(); render();
-}
-function deposit(amt){ amt=Math.floor(amt);
-  if(!amt||amt<=0) return;
-  if(G.cash<amt){ alert("현금이 부족합니다."); return; }
-  G.cash-=amt; G.bank=(G.bank||0)+amt; saveGameBg(); render();
-}
-function withdraw(amt){ amt=Math.floor(amt);
-  if(!amt||amt<=0) return;
-  if((G.bank||0)<amt){ alert("예치금이 부족합니다."); return; }
-  G.bank-=amt; G.cash+=amt; saveGameBg(); render();
-}
-
-/* ===================================================================
-   화면: 게임 (상단 메뉴: 주식 / 랭킹)
-   =================================================================== */
-function topNav(){
-  const tabBtn=(id,label)=>`<button class="navtab ${S.tab===id?'on':'off'}" data-tab="${id}">${label}</button>`;
-  return `<div class="nav"><div class="wrap row" style="padding:10px 16px">
-    <div style="display:flex;align-items:center;gap:10px">
-      <span class="tag">PAPER</span>
-      <div style="display:flex;gap:4px">${tabBtn("stocks","주식")}${tabBtn("rank","랭킹")}</div>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px">
-      <span class="muted sm">${esc(S.nickname)}</span>
-      <button id="exit" class="pill sm muted">나가기</button>
-    </div>
-  </div></div>`;
-}
-function renderGame(){
-  const content = S.tab==="rank" ? rankShell() : stocksView();
-  $("app").innerHTML = topNav() + `<div class="wrap" style="padding-top:14px;padding-bottom:40px">${content}</div>`;
-  document.querySelectorAll(".navtab").forEach(b=>b.onclick=()=>{ S.tab=b.dataset.tab; render(); });
-  $("exit").onclick=exitGame;
-  if(S.tab==="stocks") bindStocks();
-  if(S.tab==="rank") loadLeaderboard();
-}
-function stocksView(){
-  const total=netWorth(), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0;
-  return `
-    <div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
-      <div><div class="muted sm">총 자산 (현금+예금+주식)</div>
-        <div style="display:flex;align-items:baseline;gap:12px">
-          <span class="mono lg">₩${won(total)}</span>
-          <span class="mono ${up?'up':'down'}">${pct(plp)} (${up?'+':''}${won(pl)})</span></div></div>
-      <div style="text-align:right">
-        <div class="mono" style="font-size:22px;font-weight:800" id="timer">${fmtTime(G.timeLeft)}</div>
-        <div class="muted sm">⏱ 다음 변동까지</div></div>
-    </div>
-    <div class="timerbar"><i id="timerfill" style="width:${G.timeLeft/TICK_SECONDS*100}%"></i></div>
-    <div class="cols" style="margin-top:14px">
-      <div>${marketCard()}${holdingsCard()}</div>
-      <div>${bankCard()}${newsCard()}${historyCard()}</div>
-    </div>`;
-}
-function bindStocks(){
-  G.market.forEach(s=>{
-    const b=$("buy-"+s.t), sl=$("sell-"+s.t);
-    if(b) b.onclick=()=>openTrade(s.t,"buy");
-    if(sl) sl.onclick=()=>openTrade(s.t,"sell");
-  });
-  const dep=$("bankDep"), wd=$("bankWd");
-  if(dep) dep.onclick=()=>deposit(+$("bankAmt").value);
-  if(wd) wd.onclick=()=>withdraw(+$("bankAmt").value);
-}
-function marketCard(){
-  return `<div class="card" style="padding:18px;margin-bottom:16px">
-    <div class="row" style="margin-bottom:6px"><b>시장</b><span class="muted sm">8종목 · 1분마다 변동</span></div>
-    ${G.market.map(s=>{
-      const ch=(s.p-s.base)/s.base, tk=s.p-s.prev, up=ch>=0;
-      return `<div class="row stock-row">
-        <div><div style="font-weight:700">${s.t} <span class="muted sm">${s.name}</span></div>
-          <div class="muted sm">${s.sector}</div></div>
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="text-align:right">
-            <div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div>
-            <div class="mono sm ${up?'up':'down'}">${pct(ch)}</div></div>
-          <div style="display:flex;gap:6px">
-            <button id="buy-${s.t}" class="tradebtn t-buy">매수</button>
-            <button id="sell-${s.t}" class="tradebtn t-sell">매도</button></div>
-        </div></div>`;
-    }).join("")}</div>`;
-}
-function holdingsCard(){
-  const hs=Object.entries(G.holdings);
-  return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:6px"><b>보유 종목</b></div>
-    ${hs.length===0 ? `<div class="ghost">아직 보유한 종목이 없습니다.</div>` :
-    hs.map(([t,h])=>{
-      const s=G.market.find(x=>x.t===t), cur=s?s.p:h.avgCost;
-      const plv=(cur-h.avgCost)*h.shares, plp=(cur-h.avgCost)/h.avgCost, up=plv>=0;
-      return `<div class="row hold-row">
-        <div><div style="font-weight:700">${t}</div>
-          <div class="muted sm mono">${h.shares}주 · 평단 ${price(h.avgCost)}</div></div>
-        <div style="text-align:right">
-          <div class="mono">₩${won(cur*h.shares)}</div>
-          <div class="mono sm ${up?'up':'down'}">${up?'+':''}${won(plv)} (${pct(plp)})</div></div>
-      </div>`;
-    }).join("")}</div>`;
-}
-function bankCard(){
-  return `<div class="card" style="padding:18px;margin-bottom:16px">
-    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b>
-      <span class="blue sm mono">이자 1분당 ${(G.rate*100).toFixed(1)}%</span></div>
-    <div class="row" style="margin-bottom:10px"><span class="muted sm">예치금</span>
-      <span class="mono" style="font-size:17px;font-weight:700">₩${won(G.bank||0)}</span></div>
-    <input id="bankAmt" class="field" type="number" placeholder="금액 입력" style="margin-top:0" />
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button id="bankDep" class="tradebtn t-buy" style="flex:1;text-align:center">입금</button>
-      <button id="bankWd" class="tradebtn t-sell" style="flex:1;text-align:center">출금</button></div>
-    <div class="muted sm" style="margin-top:8px">예치금은 매 분 이자가 붙습니다. 금리 뉴스에 따라 이자율이 변해요.</div>
-  </div>`;
-}
-function newsCard(){
-  const tl={1:"1단계",2:"2단계",3:"3단계"};
-  return `<div class="card" style="padding:18px;margin-bottom:16px">
-    <div class="row" style="margin-bottom:6px"><b>뉴스</b><span class="muted sm">신문사·등급마다 정보의 질이 다름</span></div>
-    ${G.news.map(n=>`<div class="news-row">
-        <div style="display:flex;align-items:center;gap:7px">
-          <span class="tier-chip tier${n.tier}">${tl[n.tier]}</span>
-          <span class="muted sm">${n.company}</span></div>
-        <div style="margin-top:7px;font-size:14px;line-height:1.5">${n.text}</div>
-      </div>`).join("")}</div>`;
-}
-function historyCard(){
-  return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:6px"><b>거래내역</b><span class="muted sm">${G.history.length}건</span></div>
-    ${G.history.length===0 ? `<div class="ghost">아직 거래가 없습니다.</div>` :
-    G.history.map(h=>`<div class="row hist-row">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span class="badge ${h.side==='buy'?'b-buy':'b-sell'}">${h.side==='buy'?'매수':'매도'}</span>
-        <b>${h.t}</b><span class="muted sm mono">${h.qty}주 @ ${price(h.price)}</span></div>
-    </div>`).join("")}</div>`;
-}
-
-/* ---------- 랭킹 탭 (글로벌) ---------- */
-function rankShell(){
-  return `<div class="card" style="padding:18px">
-      <div class="row" style="margin-bottom:6px"><b>글로벌 랭킹</b>
-        <span class="muted sm">전체 유저 · 총자산 순</span></div>
-      <div id="rankList"><div class="spin" style="margin:20px auto"></div></div>
-    </div>`;
-}
-async function loadLeaderboard(){
-  try{ await saveGame(); }catch(e){}
-  let rows=[];
-  try{ rows=await fetchLeaderboard(); }catch(e){}
-  const el=$("rankList"); if(!el) return;
-  if(!rows.length){ el.innerHTML=`<div class="ghost">아직 기록이 없습니다.</div>`; return; }
-  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
-  el.innerHTML = rows.map((r,i)=>{
-    const me = r.nickname===S.nickname;
-    return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
-        <b>${esc(r.nickname)}${me?' (나)':''}</b></div>
-      <span class="mono ${r.net_worth>=START_CASH?'up':'down'}">₩${won(r.net_worth)}</span>
-    </div>`;
-  }).join("");
-}
-
-/* ---------- 거래 모달 ---------- */
 let modalState=null;
 function openTrade(t, side, mp){
   modalState={t,side,qty:1,mp:!!mp};
-  const wrap=document.createElement("div"); wrap.id="modal"; document.body.appendChild(wrap);
-  renderModal();
+  const wrap=document.createElement("div"); wrap.id="modal"; document.body.appendChild(wrap); renderModal();
 }
 function closeModal(){ const m=$("modal"); if(m) m.remove(); modalState=null; }
 function renderModal(){
@@ -1019,42 +332,482 @@ function renderModal(){
   const holdings = mp ? MP.holdings : G.holdings;
   const myCash = mp ? MP.cash : G.cash;
   const s=market.find(x=>x.t===t), buy=side==="buy";
-  const sname = mp ? (STOCKS.find(x=>x.t===t)||{}).name : s.name;
   const cost=s.p*qty, owned=holdings[t]?.shares||0, maxBuy=Math.floor(myCash/s.p);
-  $("modal").innerHTML=`
-  <div class="modal-bg" id="mbg">
-    <div class="card" style="width:100%;max-width:360px;padding:22px" onclick="event.stopPropagation()">
-      <div class="row" style="margin-bottom:16px">
-        <div><div style="font-size:20px;font-weight:800">${s.t}
-          <span class="badge ${buy?'b-buy':'b-sell'}">${buy?'매수':'매도'}</span></div>
-          <div class="muted sm">${sname}</div></div>
-        <button id="mx" class="muted" style="font-size:20px">✕</button></div>
-      <div class="row" style="margin-bottom:14px"><span class="muted sm">현재가</span>
-        <span class="mono" style="font-size:18px;font-weight:700">${price(s.p)}</span></div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button id="mm" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">−</button>
-        <input id="mq" class="field" style="text-align:center;margin-top:0" value="${qty}" />
-        <button id="mp" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">+</button>
-      </div>
-      <div style="display:flex;gap:6px;margin-bottom:16px">
-        <button class="qbtn card sm" data-q="${buy?maxBuy:owned}" style="flex:1;padding:7px;color:var(--muted)">${buy?'최대':'전량'} (${buy?maxBuy:owned})</button>
-        <button class="qbtn card sm" data-q="${Math.floor((buy?maxBuy:owned)/2)}" style="flex:1;padding:7px;color:var(--muted)">절반</button>
-      </div>
-      <div class="row" style="margin-bottom:16px"><span class="muted sm">${buy?'필요 현금':'예상 수령액'}</span>
-        <span class="mono" style="font-size:16px;font-weight:700">₩${won(cost)}</span></div>
-      <button id="mgo" class="btn-primary" style="background:${buy?'var(--up)':'var(--down)'};color:#0E1116">
-        ${qty}주 ${buy?'매수':'매도'}</button>
-      <div class="muted sm" style="text-align:center;margin-top:10px">
-        ${buy?`보유 현금 ₩${won(myCash)}`:`보유 수량 ${owned}주`}</div>
-    </div>
-  </div>`;
-  $("mbg").onclick=closeModal;
-  $("mx").onclick=closeModal;
+  $("modal").innerHTML=`<div class="modal-bg" id="mbg"><div class="card" style="width:100%;max-width:360px;padding:22px" onclick="event.stopPropagation()">
+    <div class="row" style="margin-bottom:16px"><div><div style="font-size:20px;font-weight:800">${s.t}
+      <span class="badge ${buy?'b-buy':'b-sell'}">${buy?'매수':'매도'}</span></div><div class="muted sm">${esc(stockName(t))}</div></div>
+      <button id="mx" class="muted" style="font-size:20px">✕</button></div>
+    <div class="row" style="margin-bottom:14px"><span class="muted sm">현재가</span><span class="mono" style="font-size:18px;font-weight:700">${price(s.p)}</span></div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button id="mm" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">−</button>
+      <input id="mq" class="field" style="text-align:center;margin-top:0" value="${qty}" />
+      <button id="mpp" class="card" style="width:44px;height:44px;font-size:20px;font-weight:800">+</button></div>
+    <div style="display:flex;gap:6px;margin-bottom:16px">
+      <button class="qbtn card sm" data-q="${buy?maxBuy:owned}" style="flex:1;padding:7px;color:var(--muted)">${buy?'최대':'전량'} (${buy?maxBuy:owned})</button>
+      <button class="qbtn card sm" data-q="${Math.floor((buy?maxBuy:owned)/2)}" style="flex:1;padding:7px;color:var(--muted)">절반</button></div>
+    <div class="row" style="margin-bottom:16px"><span class="muted sm">${buy?'필요 현금':'예상 수령액'}</span><span class="mono" style="font-size:16px;font-weight:700">₩${won(cost)}</span></div>
+    <button id="mgo" class="btn-primary" style="background:${buy?'var(--buy)':'var(--sell)'};color:#0E1116">${qty}주 ${buy?'매수':'매도'}</button>
+    <div class="muted sm" style="text-align:center;margin-top:10px">${buy?`보유 현금 ₩${won(myCash)}`:`보유 수량 ${owned}주`}</div>
+  </div></div>`;
+  $("mbg").onclick=closeModal; $("mx").onclick=closeModal;
   $("mm").onclick=()=>{ modalState.qty=Math.max(1,qty-1); renderModal(); };
-  $("mp").onclick=()=>{ modalState.qty=qty+1; renderModal(); };
+  $("mpp").onclick=()=>{ modalState.qty=qty+1; renderModal(); };
   $("mq").oninput=e=>{ modalState.qty=Math.max(1,parseInt(e.target.value)||1); };
   document.querySelectorAll(".qbtn").forEach(b=>b.onclick=()=>{ modalState.qty=Math.max(1,+b.dataset.q); renderModal(); });
   $("mgo").onclick=()=> mp ? mpExecute(t,side,modalState.qty) : execute(t,side,modalState.qty);
+}
+
+/* ===================================================================
+   개인 모드
+   =================================================================== */
+async function startGame(){
+  S.screen="loading"; render();
+  let st=null; try{ st=await loadSave(); }catch(e){}
+  if(st && st.market){ G=st; if(G.bank==null)G.bank=0; if(G.rate==null)G.rate=0.003; if(!G.events||!G.events.length) rollMarket(); }
+  else { G={ cash:START_CASH, bank:0, rate:0.003, holdings:{}, history:[],
+        market:STOCKS.map(s=>({...s, prev:s.p, base:s.p})), events:[], news:[], lastEventIds:[], timeLeft:TICK_SECONDS }; rollMarket(); }
+  S.tab="stocks"; S.screen="game"; render();
+  clearInterval(timer); timer=setInterval(tick,1000);
+}
+function soloNetWorth(){ let v=G.cash+(G.bank||0); for(const[t,h] of Object.entries(G.holdings)){ const s=G.market.find(x=>x.t===t); if(s)v+=s.p*h.shares; } return v; }
+function rollMarket(){
+  const active=pickEvents(G.lastEventIds); G.events=active; G.lastEventIds=active.map(e=>e.id);
+  G.rate=rollRate(active);
+  G.news=buildNews(active, G.rate);
+}
+function tick(){ if(!G)return; G.timeLeft--; if(G.timeLeft<=0){ marketTick(); return; }
+  const el=$("timer"); if(el) el.textContent=fmtTime(G.timeLeft);
+  const bar=$("timerfill"); if(bar) bar.style.width=(G.timeLeft/TICK_SECONDS*100)+"%"; }
+function fmtTime(s){ return `0:${String(s).padStart(2,"0")}`; }
+function marketTick(){
+  const evs=G.events.map(e=>EVENTS.find(x=>x.id===e.id)).filter(Boolean);
+  const useObjs = G.events[0] && G.events[0].impact ? G.events : evs;
+  G.market.forEach(s=>{ let d=0; useObjs.forEach(ev=>{ if(ev.impact[s.sector]!=null) d+=ev.impact[s.sector]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5,s.p*(1+d)); });
+  if(G.bank>0) G.bank+=G.bank*G.rate;
+  rollMarket(); G.timeLeft=TICK_SECONDS; saveGameBg(); render();
+}
+async function exitGame(){ if(!confirm("나가시겠어요? 진행 상황은 저장됩니다."))return; S.screen="loading"; render(); try{await saveGame();}catch(e){} clearInterval(timer); timer=null; S.screen="mode"; render(); }
+function execute(t,side,qty){
+  const s=G.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=s.p*qty;
+  if(side==="buy"){ if(G.cash<cost){alert("현금이 부족합니다.");return;} G.cash-=cost; const h=G.holdings[t]||{shares:0,avgCost:0}; const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; G.holdings[t]=h; }
+  else { const h=G.holdings[t]; if(!h||h.shares<qty){alert("보유 수량이 부족합니다.");return;} G.cash+=cost; h.shares-=qty; if(h.shares===0)delete G.holdings[t]; else G.holdings[t]=h; }
+  G.history.unshift({id:Date.now(),t,side,qty,price:s.p,at:Date.now()}); G.history=G.history.slice(0,40);
+  closeModal(); saveGameBg(); render();
+}
+function deposit(amt){ amt=Math.floor(amt); if(!amt||amt<=0)return; if(G.cash<amt){alert("현금이 부족합니다.");return;} G.cash-=amt; G.bank=(G.bank||0)+amt; saveGameBg(); render(); }
+function withdraw(amt){ amt=Math.floor(amt); if(!amt||amt<=0)return; if((G.bank||0)<amt){alert("예치금이 부족합니다.");return;} G.bank-=amt; G.cash+=amt; saveGameBg(); render(); }
+
+function renderGame(){
+  S.tab=S.tab||"stocks";
+  const tabs=[["stocks","주식"],["bank","은행"],["rank","랭킹"]];
+  const nav=`<div class="nav"><div class="wrap row" style="padding:10px 16px">
+    <div style="display:flex;align-items:center;gap:10px"><span class="tag">PAPER</span>
+      <div style="display:flex;gap:4px">${tabs.map(([id,l])=>`<button class="navtab ${S.tab===id?'on':'off'}" data-tab="${id}">${l}</button>`).join("")}</div></div>
+    <div style="display:flex;align-items:center;gap:8px"><span class="muted sm">${esc(S.nickname)}</span>
+      <button id="exit" class="pill sm muted">나가기</button></div></div></div>`;
+  let content;
+  if(S.tab==="rank") content=rankShell();
+  else if(S.tab==="bank") content=soloBankView();
+  else content=soloStocksView();
+  $("app").innerHTML=nav+`<div class="wrap" style="padding-top:14px;padding-bottom:40px">${content}</div>`;
+  document.querySelectorAll(".navtab").forEach(b=>b.onclick=()=>{ S.tab=b.dataset.tab; render(); });
+  $("exit").onclick=exitGame;
+  if(S.tab==="stocks") soloBindStocks();
+  else if(S.tab==="bank") soloBindBank();
+  else loadLeaderboard();
+}
+function soloStocksView(){
+  const total=soloNetWorth(), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0;
+  return `<div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+    <div><div class="muted sm">총 자산 · 현금 ₩${won(G.cash)}</div>
+      <div style="display:flex;align-items:baseline;gap:12px"><span class="mono lg">₩${won(total)}</span>
+        <span class="mono ${up?'up':'down'}">${pct(plp)}</span></div></div>
+    <div style="text-align:right"><div class="mono" style="font-size:22px;font-weight:800" id="timer">${fmtTime(G.timeLeft)}</div>
+      <div class="muted sm">⏱ 다음 변동까지</div></div></div>
+    <div class="timerbar"><i id="timerfill" style="width:${G.timeLeft/TICK_SECONDS*100}%"></i></div>
+    <div class="cols" style="margin-top:14px"><div>${marketCard(false)}${holdingsCard(false)}</div>
+      <div>${newsCardSolo()}${historyCard()}</div></div>`;
+}
+function soloBindStocks(){
+  G.market.forEach(s=>{ const b=$("buy-"+s.t), sl=$("sell-"+s.t); if(b)b.onclick=()=>openTrade(s.t,"buy",false); if(sl)sl.onclick=()=>openTrade(s.t,"sell",false);
+    const hb=$("hbuy-"+s.t), hs=$("hsell-"+s.t); if(hb)hb.onclick=()=>openTrade(s.t,"buy",false); if(hs)hs.onclick=()=>openTrade(s.t,"sell",false); });
+}
+function soloBankView(){
+  return `<div style="max-width:520px;margin:0 auto">${bankPanel(G.cash,G.bank||0,G.rate,false)}</div>`;
+}
+function soloBindBank(){ bindBankPanel(false); }
+function newsCardSolo(){
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>뉴스</b><span class="muted sm">신문사마다 내용이 다름</span></div>
+    ${G.news.map(n=>`<div class="news-row"><div class="muted sm">${n.company}</div>
+      <div style="margin-top:5px;font-size:14px;line-height:1.5">${n.text}</div></div>`).join("")}</div>`;
+}
+function historyCard(){
+  return `<div class="card" style="padding:18px"><div class="row" style="margin-bottom:6px"><b>거래내역</b><span class="muted sm">${G.history.length}건</span></div>
+    ${G.history.length===0?`<div class="ghost">아직 거래가 없습니다.</div>`:G.history.map(h=>`<div class="row hist-row">
+      <div style="display:flex;align-items:center;gap:10px"><span class="badge ${h.side==='buy'?'b-buy':'b-sell'}">${h.side==='buy'?'매수':'매도'}</span>
+        <b>${h.t}</b><span class="muted sm mono">${h.qty}주 @ ${price(h.price)}</span></div></div>`).join("")}</div>`;
+}
+/* 글로벌 랭킹 (개인) */
+function rankShell(){ return `<div class="card" style="padding:18px"><div class="row" style="margin-bottom:6px"><b>글로벌 랭킹</b><span class="muted sm">전체 유저 · 총자산 순</span></div>
+  <div id="rankList"><div class="spin" style="margin:20px auto"></div></div></div>`; }
+async function loadLeaderboard(){
+  try{ await saveGame(); }catch(e){}
+  let rows=[]; try{ rows=await fetchLeaderboard(); }catch(e){}
+  const el=$("rankList"); if(!el)return;
+  if(!rows.length){ el.innerHTML=`<div class="ghost">아직 기록이 없습니다.</div>`; return; }
+  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
+  el.innerHTML=rows.map((r,i)=>{ const me=r.nickname===S.nickname;
+    return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
+      <div style="display:flex;align-items:center;gap:10px"><span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
+        <b>${esc(r.nickname)}${me?' (나)':''}</b></div>
+      <span class="mono ${r.net_worth>=START_CASH?'up':'down'}">₩${won(r.net_worth)}</span></div>`; }).join("");
+}
+
+/* ---------- 공용: 시장/보유 카드 (mp=true면 멀티) ---------- */
+function marketCard(mp){
+  const market = mp ? S.room.game.market : G.market;
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>시장</b><span class="muted sm">${mp?'모두 같은 시세':'8종목 · 1분마다 변동'}</span></div>
+    ${market.map(s=>{ const tk=s.p-s.prev, idp=(mp?'m':'')+ '';
+      return `<div class="row stock-row"><div><div style="font-weight:700">${s.t} <span class="muted sm">${esc(stockName(s.t))}</span></div>
+        <div class="muted sm">${esc(stockSector(s.t))}</div></div>
+        <div style="display:flex;align-items:center;gap:12px"><div style="text-align:right"><div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div></div>
+          <div style="display:flex;gap:6px">
+            <button id="${mp?'mbuy':'buy'}-${s.t}" class="tradebtn t-buy">매수</button>
+            <button id="${mp?'msell':'sell'}-${s.t}" class="tradebtn t-sell">매도</button></div></div></div>`; }).join("")}</div>`;
+}
+function holdingsCard(mp){
+  const market = mp ? S.room.game.market : G.market;
+  const holdings = mp ? MP.holdings : G.holdings;
+  const hs=Object.entries(holdings);
+  return `<div class="card" style="padding:18px"><div class="row" style="margin-bottom:6px"><b>보유 종목</b><span class="muted sm">여기서도 매매 가능</span></div>
+    ${hs.length===0?`<div class="ghost">아직 보유한 종목이 없습니다.</div>`:hs.map(([t,h])=>{
+      const s=market.find(x=>x.t===t), cur=s?s.p:h.avgCost, plv=(cur-h.avgCost)*h.shares, plp=(cur-h.avgCost)/h.avgCost, up=plv>=0;
+      return `<div class="hold-row"><div class="row">
+        <div><div style="font-weight:700">${t} <span class="muted sm">${esc(stockName(t))}</span></div>
+          <div class="muted sm mono">${h.shares}주 · 평단 ${price(h.avgCost)}</div></div>
+        <div style="text-align:right"><div class="mono">₩${won(cur*h.shares)}</div>
+          <div class="mono sm ${up?'up':'down'}">${up?'+':''}${won(plv)} (${pct(plp)})</div></div></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button id="${mp?'mhbuy':'hbuy'}-${t}" class="tradebtn t-buy" style="flex:1;text-align:center">매수</button>
+          <button id="${mp?'mhsell':'hsell'}-${t}" class="tradebtn t-sell" style="flex:1;text-align:center">매도</button></div></div>`; }).join("")}</div>`;
+}
+
+/* ---------- 공용 은행 패널 ---------- */
+function bankPanel(cash, bank, rate, mp){
+  let loanHtml="";
+  if(mp){
+    const assets=mpAssets(MP), cg=creditGrade(assets), avail=Math.max(0,cg.limit-MP.loanPrincipal), debt=MP.loanPrincipal+MP.loanInterest;
+    loanHtml=`<div class="card" style="padding:18px;margin-top:14px;background:var(--bg)">
+      <div class="row" style="margin-bottom:8px"><b>💳 대출</b><span class="sm">신용등급 <b class="gold">${cg.g}</b> · 한도 ₩${won(cg.limit)}</span></div>
+      <div class="row sm" style="margin-bottom:4px"><span class="muted">대출 원금</span><span class="mono">₩${won(MP.loanPrincipal)}</span></div>
+      <div class="row sm" style="margin-bottom:4px"><span class="muted">누적 이자</span><span class="mono down">₩${won(MP.loanInterest)}</span></div>
+      <div class="row sm" style="margin-bottom:10px"><span class="muted">대출 가능액</span><span class="mono">₩${won(avail)}</span></div>
+      <input id="loanAmt" class="field" type="number" placeholder="대출 금액" style="margin-top:0" />
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button id="loanMax" class="minibtn" style="flex:1">최대 (${won(avail)})</button>
+        <button id="loanGo" class="tradebtn t-buy" style="flex:1;text-align:center">대출</button>
+        <button id="loanRepay" class="tradebtn t-sell" style="flex:1;text-align:center">전액 상환 (₩${won(debt)})</button></div>
+      <div class="muted sm" style="margin-top:8px">매 라운드 원금의 ${(LOAN_RATE*100).toFixed(0)}%가 이자로 붙습니다. 순위에선 누적 이자만큼 차감돼요.</div></div>`;
+  }
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b><span class="blue sm mono">이자 ${mp?'1라운드':'1분'}당 ${(rate*100).toFixed(1)}%</span></div>
+    <div class="grid2-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <div class="card" style="padding:12px;background:var(--bg)"><div class="muted sm">예치금</div><div class="mono" style="font-size:16px;font-weight:700;margin-top:2px">₩${won(bank)}</div></div>
+      <div class="card" style="padding:12px;background:var(--bg)"><div class="muted sm">보유 현금</div><div class="mono" style="font-size:16px;font-weight:700;margin-top:2px">₩${won(cash)}</div></div></div>
+    <input id="bankAmt" class="field" type="number" placeholder="금액 입력" style="margin-top:0" />
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <button id="bankDep" class="tradebtn t-buy" style="flex:1;text-align:center">입금</button>
+      <button id="bankWd" class="tradebtn t-sell" style="flex:1;text-align:center">출금</button></div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button id="depAll" class="minibtn" style="flex:1">현금 전액 입금</button>
+      <button id="depHalf" class="minibtn" style="flex:1">절반 입금</button>
+      <button id="wdAll" class="minibtn" style="flex:1">예금 전액 출금</button>
+      <button id="wdHalf" class="minibtn" style="flex:1">절반 출금</button></div>
+    ${loanHtml}</div>`;
+}
+function bindBankPanel(mp){
+  const dep=mp?mpDeposit:deposit, wd=mp?mpWithdraw:withdraw;
+  const cash=()=> mp?MP.cash:G.cash, bank=()=> mp?(MP.bank||0):(G.bank||0);
+  const amt=()=> +($("bankAmt")?.value||0);
+  if($("bankDep")) $("bankDep").onclick=()=>dep(amt());
+  if($("bankWd"))  $("bankWd").onclick=()=>wd(amt());
+  if($("depAll"))  $("depAll").onclick=()=>dep(cash());
+  if($("depHalf")) $("depHalf").onclick=()=>dep(Math.floor(cash()/2));
+  if($("wdAll"))   $("wdAll").onclick=()=>wd(bank());
+  if($("wdHalf"))  $("wdHalf").onclick=()=>wd(Math.floor(bank()/2));
+  if(mp){
+    const assets=mpAssets(MP), cg=creditGrade(assets), avail=Math.max(0,cg.limit-MP.loanPrincipal);
+    if($("loanMax")) $("loanMax").onclick=()=>{ $("loanAmt").value=avail; };
+    if($("loanGo"))  $("loanGo").onclick=()=>mpBorrow(+($("loanAmt")?.value||0));
+    if($("loanRepay")) $("loanRepay").onclick=mpRepayAll;
+  }
+}
+
+/* ===================================================================
+   멀티 모드 — 로비
+   =================================================================== */
+function genCode(){ const ch="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let s=""; for(let i=0;i<6;i++) s+=ch[Math.floor(Math.random()*ch.length)]; return s; }
+function renderMpEntry(){
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:420px">
+    <button id="back" class="muted sm" style="margin-bottom:16px">← 모드 선택</button>
+    <div style="font-size:22px;font-weight:800;margin-bottom:18px">멀티 모드</div>
+    <button id="create" class="card" style="width:100%;text-align:left;padding:22px;margin-bottom:14px">
+      <div style="font-size:18px;font-weight:800">방 만들기</div><div class="muted sm" style="margin-top:6px">새 방을 열고 친구들을 초대합니다. 내가 방장이 됩니다.</div></button>
+    <button id="join" class="card" style="width:100%;text-align:left;padding:22px">
+      <div style="font-size:18px;font-weight:800">방 참가</div><div class="muted sm" style="margin-top:6px">참가 코드를 입력해 친구의 방에 들어갑니다.</div></button>
+    <div id="join-box" style="margin-top:14px"></div></div></div>`;
+  $("back").onclick=()=>{ S.screen="mode"; render(); };
+  $("create").onclick=createRoom;
+  $("join").onclick=()=>{ $("join-box").innerHTML=`<div class="card" style="padding:16px">
+    <input id="code-in" class="field" placeholder="참가 코드 (예: ABC123)" style="margin-top:0;text-transform:uppercase" />
+    <button id="join-go" class="btn-primary" style="margin-top:10px">입장</button>
+    <div id="join-err" class="down sm" style="margin-top:8px"></div></div>`;
+    $("join-go").onclick=()=>joinRoom($("code-in").value.trim().toUpperCase());
+    $("code-in").focus(); $("code-in").onkeydown=e=>{ if(e.key==="Enter") joinRoom($("code-in").value.trim().toUpperCase()); }; };
+}
+async function createRoom(){
+  S.screen="loading"; render(); let room=null,tries=0;
+  while(tries++<5){ const { data, error }=await sb.from("rooms").insert({ code:genCode(), host_id:S.user.id, status:"waiting", total_rounds:10 }).select().single(); if(!error){room=data;break;} }
+  if(!room){ alert("방 생성 실패. SQL(테이블/권한)이 적용됐는지 확인하세요."); S.screen="mp_entry"; render(); return; }
+  await sb.from("room_players").insert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname });
+  S.room=room; S.isHost=true; await enterRoom();
+}
+async function joinRoom(code){
+  const errEl=$("join-err"); if(!code){ if(errEl)errEl.textContent="코드를 입력하세요."; return; }
+  const { data:room }=await sb.from("rooms").select("*").eq("code",code).maybeSingle();
+  if(!room){ if(errEl)errEl.textContent="그런 코드의 방이 없습니다."; return; }
+  if(room.status!=="waiting"){ if(errEl)errEl.textContent="이미 시작했거나 종료된 방입니다."; return; }
+  S.screen="loading"; render();
+  await sb.from("room_players").upsert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname }, { onConflict:"room_id,user_id" });
+  S.room=room; S.isHost=(room.host_id===S.user.id); await enterRoom();
+}
+async function enterRoom(){ await refreshPlayers(); subscribeRoom(S.room.id); S.screen="mp_room"; render(); }
+async function refreshPlayers(){
+  const { data }=await sb.from("room_players").select("user_id,nickname,joined_at,cash,bank,holdings,loan_interest").eq("room_id",S.room.id).order("joined_at");
+  S.players=data||[];
+  if(S.screen==="mp_room"){ const el=$("playerList"); if(el)el.innerHTML=playerListHtml(); const c=$("pcount"); if(c)c.textContent=S.players.length+"명"; }
+  if(S.screen==="mp_game" && S.mpTab==="rank"){ const el=$("mpRankList"); if(el)el.innerHTML=mpRankListHtml(); }
+}
+function subscribeRoom(roomId){
+  if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
+  rtChannel=sb.channel("room-"+roomId)
+    .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:"room_id=eq."+roomId},()=>refreshPlayers())
+    .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:"id=eq."+roomId},p=>onRoomUpdate(p.new))
+    .subscribe();
+}
+function playerListHtml(){
+  return S.players.map(p=>`<div class="row rank-row"><div style="display:flex;align-items:center;gap:8px">
+    <b>${esc(p.nickname)}</b>${p.user_id===S.room.host_id?'<span class="tier-chip tier2">방장</span>':''}${p.user_id===S.user.id?'<span class="muted sm">(나)</span>':''}</div></div>`).join("");
+}
+function renderMpRoom(){
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:440px">
+    <div class="row" style="margin-bottom:18px"><div style="font-size:20px;font-weight:800">대기실</div><button id="leave" class="pill muted sm">나가기</button></div>
+    <div class="card" style="padding:20px;text-align:center;margin-bottom:16px"><div class="muted sm">참가 코드</div>
+      <div class="mono" style="font-size:34px;font-weight:800;letter-spacing:.15em;margin-top:4px">${S.room.code}</div>
+      <button id="copy" class="pill sm gold" style="margin-top:8px">코드 복사</button></div>
+    <div class="card" style="padding:18px;margin-bottom:16px"><div class="row" style="margin-bottom:6px"><b>참가자</b><span class="muted sm" id="pcount">${S.players.length}명</span></div>
+      <div id="playerList">${playerListHtml()}</div></div>
+    ${S.isHost?`<div class="card" style="padding:18px;margin-bottom:14px">
+        <div class="row"><span class="muted sm">라운드 수</span><span class="mono" id="rval" style="font-size:20px;font-weight:800">10</span></div>
+        <input id="roundSel" type="range" min="10" max="30" value="10" style="width:100%;margin-top:8px;accent-color:var(--gold)" />
+        <div class="row" style="margin-top:12px"><span class="muted sm">라운드 시간(초)</span><span class="mono" id="sval" style="font-size:20px;font-weight:800">30초</span></div>
+        <input id="secSel" type="range" min="10" max="60" step="5" value="30" style="width:100%;margin-top:8px;accent-color:var(--gold)" /></div>
+      <button id="start" class="btn-primary">게임 시작</button>`
+    :`<div class="ghost">방장이 시작하기를 기다리는 중…</div>`}</div></div>`;
+  $("leave").onclick=leaveRoom;
+  $("copy").onclick=()=>{ try{navigator.clipboard.writeText(S.room.code);}catch(e){} $("copy").textContent="복사됨!"; };
+  if(S.isHost){ const rs=$("roundSel"); rs.oninput=()=>$("rval").textContent=rs.value;
+    const ss=$("secSel"); ss.oninput=()=>$("sval").textContent=ss.value+"초"; $("start").onclick=startMpGame; }
+}
+async function leaveRoom(){
+  const roomId=S.room&&S.room.id;
+  try{ if(S.isHost){ await sb.from("rooms").update({status:"ended"}).eq("id",roomId); } await sb.from("room_players").delete().eq("room_id",roomId).eq("user_id",S.user.id); }catch(e){}
+  leaveRoomLocal();
+}
+function leaveRoomLocal(){ if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; } if(mpTimer){ clearInterval(mpTimer); mpTimer=null; } MP=null; S.room=null; S.players=[]; S.isHost=false; S.screen="mode"; render(); }
+
+/* ===================================================================
+   멀티 모드 — 동기화 게임
+   =================================================================== */
+function onRoomUpdate(room){
+  S.room=room;
+  if(room.status==="ended"){ alert("방장이 방을 닫았습니다."); leaveRoomLocal(); return; }
+  if(room.status==="finished"){ if(mpTimer){clearInterval(mpTimer);mpTimer=null;} S.screen="mp_result"; render(); return; }
+  if(room.status==="playing"){
+    const g=room.game;
+    if(S.screen!=="mp_game"){ enterMpGame(); return; }
+    if(g && g.result && g.result.round>mpLastSettled){      // 라운드 정산(이자/대출이자)
+      if(MP){
+        if(MP.bank>0) MP.bank += MP.bank*(g.endedRate||g.rate);
+        if(MP.loanPrincipal>0) MP.loanInterest += MP.loanPrincipal*LOAN_RATE;
+        mpSavePortfolio();
+      }
+      mpLastSettled=g.result.round;
+    }
+    render(); return;
+  }
+  if(S.screen==="mp_room") render();
+}
+async function startMpGame(){
+  const rounds=+(($("roundSel")&&$("roundSel").value)||10);
+  const secs=+(($("secSel")&&$("secSel").value)||30);
+  const g={ round:1, total:rounds, roundSeconds:secs, phase:"intro", result:null, endedRate:null,
+            market:STOCKS.map(s=>({t:s.t,p:s.p,prev:s.p})), lastIds:[] };
+  const active=pickEvents(g.lastIds); g.lastIds=active.map(e=>e.id); g.rate=rollRate(active); g.events=g.lastIds; g.news=buildNews(active,g.rate);
+  g.endsAt=Date.now()+RESULT_SECONDS*1000;
+  await sb.from("rooms").update({ status:"playing", total_rounds:rounds, game:g }).eq("id",S.room.id);
+  S.room.status="playing"; S.room.game=g; await enterMpGame();
+}
+async function enterMpGame(){
+  await mpLoadPortfolio();
+  mpLastSettled = S.room.game.result ? S.room.game.result.round : 0;
+  if(!mpTimer) mpTimer=setInterval(mpTick,1000);
+  S.mpTab="stocks"; S.screen="mp_game"; render();
+}
+function mpTick(){
+  const g=S.room&&S.room.game; if(!g||S.room.status!=="playing") return;
+  if(S.isHost && Date.now()>=g.endsAt){ mpAdvance(); return; }
+  const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
+  const a=$("mtimer"); if(a) a.textContent=fmtTime(left);
+  const b=$("mtimerfill"); if(b){ const span=(g.phase==="live"?g.roundSeconds:RESULT_SECONDS)*1000; b.style.width=Math.max(0,Math.min(100,(g.endsAt-Date.now())/span*100))+"%"; }
+  const c=$("introtimer"); if(c) c.textContent=left+"초";
+}
+async function mpAdvance(){
+  const g=JSON.parse(JSON.stringify(S.room.game));
+  if(g.phase==="intro"){ g.phase="live"; g.endsAt=Date.now()+g.roundSeconds*1000; S.room.game=g; await sb.from("rooms").update({game:g}).eq("id",S.room.id); return; }
+  // live 종료 → 시세 변동 + 결과 집계
+  const evs=g.events.map(id=>EVENTS.find(e=>e.id===id)).filter(Boolean);
+  g.market.forEach(s=>{ const sec=stockSector(s.t); let d=0; evs.forEach(ev=>{ if(ev.impact[sec]!=null) d+=ev.impact[sec]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5,s.p*(1+d)); });
+  let upS=null,dnS=null; g.market.forEach(s=>{ const p=(s.p-s.prev)/s.prev; if(!upS||p>upS.pct)upS={t:s.t,pct:p}; if(!dnS||p<dnS.pct)dnS={t:s.t,pct:p}; });
+  let leader=null; (S.players||[]).forEach(pl=>{ const nw=playerAssets(pl); if(!leader||nw>leader.nw)leader={nick:pl.nickname,nw}; });
+  g.result={ round:g.round, topUp:upS, topDown:dnS, leader };
+  g.endedRate=g.rate;
+  if(g.round>=g.total){ await sb.from("rooms").update({status:"finished",game:g}).eq("id",S.room.id); S.room.status="finished"; S.room.game=g; if(mpTimer){clearInterval(mpTimer);mpTimer=null;} S.screen="mp_result"; render(); return; }
+  g.round++;
+  const active=pickEvents(g.lastIds); g.lastIds=active.map(e=>e.id); g.events=g.lastIds; g.rate=rollRate(active); g.news=buildNews(active,g.rate);
+  g.phase="intro"; g.endsAt=Date.now()+RESULT_SECONDS*1000;
+  S.room.game=g; await sb.from("rooms").update({game:g}).eq("id",S.room.id);
+}
+/* 내 지갑 */
+async function mpLoadPortfolio(){
+  const { data }=await sb.from("room_players").select("cash,bank,holdings,coins,loan_principal,loan_interest,bought").eq("room_id",S.room.id).eq("user_id",S.user.id).maybeSingle();
+  MP = data ? { cash:Number(data.cash), bank:Number(data.bank||0), holdings:data.holdings||{}, coins:data.coins==null?START_COINS:Number(data.coins),
+                loanPrincipal:Number(data.loan_principal||0), loanInterest:Number(data.loan_interest||0), bought:data.bought||{round:0,ids:[]} }
+            : { cash:START_CASH, bank:0, holdings:{}, coins:START_COINS, loanPrincipal:0, loanInterest:0, bought:{round:0,ids:[]} };
+}
+async function mpSavePortfolio(){
+  if(!MP) return;
+  try{ await sb.from("room_players").update({ cash:Math.round(MP.cash), bank:Math.round(MP.bank), holdings:MP.holdings, coins:MP.coins,
+    loan_principal:Math.round(MP.loanPrincipal), loan_interest:Math.round(MP.loanInterest), bought:MP.bought })
+    .eq("room_id",S.room.id).eq("user_id",S.user.id); }catch(e){}
+}
+function mpAssets(pf){ let v=Number(pf.cash||0)+Number(pf.bank||0); const g=S.room.game; for(const[t,h] of Object.entries(pf.holdings||{})){ const s=g.market.find(x=>x.t===t); if(s&&h)v+=s.p*h.shares; } return v; }
+function mpRankWorth(){ return mpAssets(MP)-(MP.loanInterest||0); }
+function playerAssets(pl){ let v=Number(pl.cash||0)+Number(pl.bank||0); const g=S.room.game; for(const[t,h] of Object.entries(pl.holdings||{})){ const s=g.market.find(x=>x.t===t); if(s&&h)v+=s.p*h.shares; } return v; }
+function playerRankWorth(pl){ return playerAssets(pl)-Number(pl.loan_interest||0); }
+function mpExecute(t,side,qty){
+  const g=S.room.game; if(g.phase!=="live"){ alert("라운드 시작 후에 거래할 수 있어요."); return; }
+  const s=g.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=s.p*qty;
+  if(side==="buy"){ if(MP.cash<cost){alert("현금이 부족합니다.");return;} MP.cash-=cost; const h=MP.holdings[t]||{shares:0,avgCost:0}; const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; MP.holdings[t]=h; }
+  else { const h=MP.holdings[t]; if(!h||h.shares<qty){alert("보유 수량이 부족합니다.");return;} MP.cash+=cost; h.shares-=qty; if(h.shares===0)delete MP.holdings[t]; else MP.holdings[t]=h; }
+  closeModal(); mpSavePortfolio(); render();
+}
+function mpDeposit(amt){ amt=Math.floor(amt); if(!amt||amt<=0)return; if(MP.cash<amt){alert("현금이 부족합니다.");return;} MP.cash-=amt; MP.bank+=amt; mpSavePortfolio(); render(); }
+function mpWithdraw(amt){ amt=Math.floor(amt); if(!amt||amt<=0)return; if(MP.bank<amt){alert("예치금이 부족합니다.");return;} MP.bank-=amt; MP.cash+=amt; mpSavePortfolio(); render(); }
+function mpBorrow(amt){ amt=Math.floor(amt); if(!amt||amt<=0)return; const cg=creditGrade(mpAssets(MP)); if(MP.loanPrincipal+amt>cg.limit){alert("대출 한도를 초과합니다.");return;} MP.loanPrincipal+=amt; MP.cash+=amt; mpSavePortfolio(); render(); }
+function mpRepayAll(){ const debt=MP.loanPrincipal+MP.loanInterest; if(debt<=0){alert("상환할 대출이 없습니다.");return;} if(MP.cash<debt){alert("현금이 부족합니다.");return;} MP.cash-=debt; MP.loanPrincipal=0; MP.loanInterest=0; mpSavePortfolio(); render(); }
+function mpBuyNews(id){
+  const g=S.room.game; const n=g.news.find(x=>x.id===id); if(!n)return;
+  if(!MP.bought||MP.bought.round!==g.round) MP.bought={round:g.round,ids:[]};
+  if(MP.bought.ids.includes(id)) return;
+  const cost=NEWS_COST[n.tier]; if((MP.coins||0)<cost){ alert("코인이 부족합니다."); return; }
+  MP.coins-=cost; MP.bought.ids.push(id); mpSavePortfolio(); render();
+}
+
+function renderMpGame(){
+  const g=S.room.game;
+  if(g.phase==="intro"){ renderMpIntro(); return; }
+  S.mpTab=S.mpTab||"stocks";
+  const tabs=[["stocks","주식"],["bank","은행"],["rank","랭킹"]];
+  const nav=`<div class="nav"><div class="wrap row" style="padding:10px 16px">
+    <div style="display:flex;align-items:center;gap:10px"><span class="tag">방 ${S.room.code}</span>
+      <div style="display:flex;gap:4px">${tabs.map(([id,l])=>`<button class="navtab ${S.mpTab===id?'on':'off'}" data-mtab="${id}">${l}</button>`).join("")}</div></div>
+    <button id="leave2" class="pill sm muted">나가기</button></div></div>`;
+  let content;
+  if(S.mpTab==="rank") content=mpRankView();
+  else if(S.mpTab==="bank") content=mpBankView();
+  else content=mpStocksView();
+  $("app").innerHTML=nav+`<div class="wrap" style="padding-top:14px;padding-bottom:40px">${content}</div>`;
+  document.querySelectorAll(".navtab").forEach(b=>b.onclick=()=>{ S.mpTab=b.dataset.mtab; render(); });
+  $("leave2").onclick=leaveRoom;
+  if(S.mpTab==="stocks") mpBindStocks();
+  else if(S.mpTab==="bank") bindBankPanel(true);
+}
+function renderMpIntro(){
+  const g=S.room.game, r=g.result, left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
+  let resHtml="";
+  if(r){ const u=r.topUp,d=r.topDown,l=r.leader;
+    resHtml=`<div class="card" style="padding:18px;margin-top:18px;text-align:left">
+      <div class="muted sm" style="margin-bottom:8px">지난 ${r.round}라운드 결과</div>
+      <div class="row" style="margin-bottom:6px"><span class="up">▲ 최고 상승</span><span class="mono">${esc(stockName(u.t))} ${pct(u.pct)}</span></div>
+      <div class="row" style="margin-bottom:6px"><span class="down">▼ 최고 하락</span><span class="mono">${esc(stockName(d.t))} ${pct(d.pct)}</span></div>
+      ${l?`<div class="row"><span class="gold">👑 선두</span><span class="mono">${esc(l.nick)} · ₩${won(l.nw)}</span></div>`:""}</div>`; }
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:420px;text-align:center">
+    <div class="tag">ROUND</div><div class="roundbig">라운드 ${g.round}</div>
+    <div class="muted sm" style="margin-top:6px">잠시 후 시작 · <span id="introtimer">${left}초</span></div>
+    ${resHtml}
+    <button id="leaveIntro" class="pill muted sm" style="margin-top:18px;width:100%;padding:12px">방 나가기</button></div></div>`;
+  $("leaveIntro").onclick=leaveRoom;
+}
+function mpStocksView(){
+  const g=S.room.game; if(!g||!MP) return `<div class="ghost">불러오는 중…</div>`;
+  const total=mpAssets(MP), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0, left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
+  return `<div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+    <div><div class="muted sm">내 자산 · 현금 ₩${won(MP.cash)} · 🪙${MP.coins} · 라운드 ${g.round}/${g.total}</div>
+      <div style="display:flex;align-items:baseline;gap:12px"><span class="mono lg">₩${won(total)}</span><span class="mono ${up?'up':'down'}">${pct(plp)}</span></div></div>
+    <div style="text-align:right"><div class="mono" style="font-size:22px;font-weight:800" id="mtimer">${fmtTime(left)}</div><div class="muted sm">⏱ 라운드 종료까지</div></div></div>
+    <div class="timerbar"><i id="mtimerfill" style="width:${left/g.roundSeconds*100}%"></i></div>
+    <div class="cols" style="margin-top:14px"><div>${marketCard(true)}${holdingsCard(true)}</div><div>${mpNewsCard()}</div></div>`;
+}
+function mpBindStocks(){
+  S.room.game.market.forEach(s=>{ const b=$("mbuy-"+s.t), sl=$("msell-"+s.t); if(b)b.onclick=()=>openTrade(s.t,"buy",true); if(sl)sl.onclick=()=>openTrade(s.t,"sell",true);
+    const hb=$("mhbuy-"+s.t), hs=$("mhsell-"+s.t); if(hb)hb.onclick=()=>openTrade(s.t,"buy",true); if(hs)hs.onclick=()=>openTrade(s.t,"sell",true); });
+  G_bindNews();
+}
+function G_bindNews(){ (S.room.game.news||[]).forEach(n=>{ const el=$("mnews-"+n.id); if(el) el.onclick=()=>mpBuyNews(n.id); }); }
+function mpBankView(){ return `<div style="max-width:520px;margin:0 auto">${bankPanel(MP.cash,MP.bank,S.room.game.rate,true)}</div>`; }
+function mpNewsCard(){
+  const g=S.room.game, tl={1:"1단계",2:"2단계",3:"3단계"};
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>뉴스</b><span class="muted sm">🪙 ${MP.coins} · 코인으로 구매</span></div>
+    ${(g.news||[]).map(n=>{ const owned=MP.bought&&MP.bought.round===g.round&&MP.bought.ids.includes(n.id); const cost=NEWS_COST[n.tier];
+      return `<div class="news-row"><div class="row"><div style="display:flex;align-items:center;gap:7px">
+        <span class="tier-chip tier${n.tier}">${tl[n.tier]}</span><span class="muted sm">${n.company}</span></div>
+        ${owned?'<span class="up sm">구매됨</span>':`<button id="mnews-${n.id}" class="pill sm gold">🔓 ${cost}코인</button>`}</div>
+        <div style="margin-top:7px;font-size:14px;line-height:1.5" class="${owned?'':'newslock'}">${owned?n.text:"█████████ ████ ██████ ███████"}</div></div>`; }).join("")}</div>`;
+}
+function mpRankListHtml(){
+  const rows=(S.players||[]).map(p=>{ const me=p.user_id===S.user.id; return { nick:p.nickname, uid:p.user_id, nw: me?mpRankWorth():playerRankWorth(p) }; }).sort((a,b)=>b.nw-a.nw);
+  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
+  return rows.map((r,i)=>{ const me=r.uid===S.user.id; return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
+    <div style="display:flex;align-items:center;gap:10px"><span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span><b>${esc(r.nick)}${me?' (나)':''}</b></div>
+    <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`; }).join("");
+}
+function mpRankView(){ return `<div class="card" style="padding:18px"><div class="row" style="margin-bottom:6px"><b>실시간 순위</b><span class="muted sm">대출 이자는 순위에서 차감</span></div><div id="mpRankList">${mpRankListHtml()}</div></div>`; }
+function renderMpResult(){
+  const rows=(S.players||[]).map(p=>{ const me=p.user_id===S.user.id; return { nick:p.nickname, uid:p.user_id, nw: me?mpRankWorth():playerRankWorth(p) }; }).sort((a,b)=>b.nw-a.nw);
+  const myRank=rows.findIndex(r=>r.uid===S.user.id)+1, medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
+  $("app").innerHTML=`<div class="center"><div style="width:100%;max-width:440px;text-align:center">
+    <div class="tag">게임 종료</div><div style="font-size:44px;margin:10px 0">${myRank===1?'👑':'🏁'}</div>
+    <div style="font-size:18px;font-weight:800">최종 순위 ${myRank}위 / ${rows.length}명</div>
+    <div class="card" style="padding:18px;margin-top:18px;text-align:left">${rows.map((r,i)=>{ const me=r.uid===S.user.id;
+      return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span><b>${esc(r.nick)}${me?' (나)':''}</b></div>
+        <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`; }).join("")}</div>
+    <button id="leave3" class="btn-primary" style="margin-top:20px">나가기</button></div></div>`;
+  $("leave3").onclick=leaveRoom;
 }
 
 /* ===================================================================
