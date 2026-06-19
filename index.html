@@ -158,6 +158,7 @@ const $ = id => document.getElementById(id);
 /* ---------- 전역 상태 ---------- */
 let S = { screen:"loading", authTab:"login", user:null, nickname:null, tab:"stocks" };
 let G = null, timer = null, busy = false;
+let rtChannel = null;   // 멀티 모드 실시간 채널
 
 /* ===================================================================
    부팅 / 인증 (Supabase)
@@ -221,6 +222,7 @@ async function onLoggedIn(user){
 }
 
 async function logout(){
+  if(rtChannel){ try{ sb.removeChannel(rtChannel); }catch(e){} rtChannel=null; }
   try{ await saveGame(true); }catch(e){}
   clearInterval(timer); timer=null; G=null;
   try{ await sb.auth.signOut(); }catch(e){}
@@ -321,15 +323,178 @@ function renderMode(){
       <div style="font-size:18px;font-weight:800">개인 모드</div>
       <div class="muted sm" style="margin-top:6px">1분마다 바뀌는 시세·뉴스를 보며 투자. 진행 상황은 계정에 저장되어 어디서든 이어집니다.</div>
     </button>
-    <button id="m-multi" class="card" style="width:100%;text-align:left;padding:22px;opacity:.7">
-      <div class="row"><div style="font-size:18px;font-weight:800">멀티 모드</div>
-        <span class="tier-chip tier2">준비 중</span></div>
-      <div class="muted sm" style="margin-top:6px">친구들과 방을 만들어 라운드 대결. (2단계 예정)</div>
+    <button id="m-multi" class="card" style="width:100%;text-align:left;padding:22px">
+      <div style="font-size:18px;font-weight:800">멀티 모드</div>
+      <div class="muted sm" style="margin-top:6px">친구들과 방을 만들어 실시간으로 대결합니다.</div>
     </button>
   </div></div>`;
   $("logout").onclick=logout;
   $("m-solo").onclick=startGame;
-  $("m-multi").onclick=()=>alert("멀티 모드는 2단계(Supabase 실시간)에서 추가됩니다.");
+  $("m-multi").onclick=()=>{ S.screen="mp_entry"; render(); };
+}
+
+/* ===================================================================
+   멀티 모드 — 2단계 A: 로비 (방 / 참가코드 / 실시간 대기실)
+   =================================================================== */
+function genCode(){
+  const ch="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let s="";
+  for(let i=0;i<6;i++) s+=ch[Math.floor(Math.random()*ch.length)];
+  return s;
+}
+function renderMpEntry(){
+  $("app").innerHTML = `
+  <div class="center"><div style="width:100%;max-width:420px">
+    <button id="back" class="muted sm" style="margin-bottom:16px">← 모드 선택</button>
+    <div style="font-size:22px;font-weight:800;margin-bottom:18px">멀티 모드</div>
+    <button id="create" class="card" style="width:100%;text-align:left;padding:22px;margin-bottom:14px">
+      <div style="font-size:18px;font-weight:800">방 만들기</div>
+      <div class="muted sm" style="margin-top:6px">새 방을 열고 친구들을 초대합니다. 내가 방장이 됩니다.</div>
+    </button>
+    <button id="join" class="card" style="width:100%;text-align:left;padding:22px">
+      <div style="font-size:18px;font-weight:800">방 참가</div>
+      <div class="muted sm" style="margin-top:6px">참가 코드를 입력해 친구의 방에 들어갑니다.</div>
+    </button>
+    <div id="join-box" style="margin-top:14px"></div>
+  </div></div>`;
+  $("back").onclick=()=>{ S.screen="mode"; render(); };
+  $("create").onclick=createRoom;
+  $("join").onclick=()=>{
+    $("join-box").innerHTML = `
+      <div class="card" style="padding:16px">
+        <input id="code-in" class="field" placeholder="참가 코드 (예: ABC123)" style="margin-top:0;text-transform:uppercase" />
+        <button id="join-go" class="btn-primary" style="margin-top:10px">입장</button>
+        <div id="join-err" class="down sm" style="margin-top:8px"></div>
+      </div>`;
+    $("join-go").onclick=()=>joinRoom($("code-in").value.trim().toUpperCase());
+    $("code-in").focus();
+    $("code-in").onkeydown=e=>{ if(e.key==="Enter") joinRoom($("code-in").value.trim().toUpperCase()); };
+  };
+}
+
+async function createRoom(){
+  S.screen="loading"; render();
+  let room=null, tries=0;
+  while(tries++<5){
+    const { data, error } = await sb.from("rooms")
+      .insert({ code:genCode(), host_id:S.user.id, status:"waiting", total_rounds:10 })
+      .select().single();
+    if(!error){ room=data; break; }
+  }
+  if(!room){ alert("방 생성에 실패했습니다. SQL(테이블/권한)이 적용됐는지 확인해주세요."); S.screen="mp_entry"; render(); return; }
+  await sb.from("room_players").insert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname });
+  S.room=room; S.isHost=true;
+  await enterRoom();
+}
+async function joinRoom(code){
+  const errEl=$("join-err");
+  if(!code){ if(errEl) errEl.textContent="코드를 입력하세요."; return; }
+  const { data:room } = await sb.from("rooms").select("*").eq("code",code).maybeSingle();
+  if(!room){ if(errEl) errEl.textContent="그런 코드의 방이 없습니다."; return; }
+  if(room.status!=="waiting"){ if(errEl) errEl.textContent="이미 시작했거나 종료된 방입니다."; return; }
+  S.screen="loading"; render();
+  await sb.from("room_players").upsert({ room_id:room.id, user_id:S.user.id, nickname:S.nickname }, { onConflict:"room_id,user_id" });
+  S.room=room; S.isHost=(room.host_id===S.user.id);
+  await enterRoom();
+}
+async function enterRoom(){
+  await refreshPlayers();
+  subscribeRoom(S.room.id);
+  S.screen="mp_room"; render();
+}
+async function refreshPlayers(){
+  const { data } = await sb.from("room_players").select("user_id,nickname,joined_at").eq("room_id",S.room.id).order("joined_at");
+  S.players = data || [];
+  if(S.screen==="mp_room"){
+    const el=$("playerList"); if(el) el.innerHTML=playerListHtml();
+    const c=$("pcount"); if(c) c.textContent=S.players.length+"명";
+  }
+}
+function subscribeRoom(roomId){
+  if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
+  rtChannel = sb.channel("room-"+roomId)
+    .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:"room_id=eq."+roomId}, ()=>refreshPlayers())
+    .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:"id=eq."+roomId}, p=>onRoomUpdate(p.new))
+    .subscribe();
+}
+function onRoomUpdate(room){
+  S.room=room;
+  if(room.status==="playing"){ S.screen="mp_game"; render(); }
+  else if(room.status==="ended"){ alert("방장이 방을 닫았습니다."); leaveRoomLocal(); }
+}
+async function startMpGame(){
+  const rounds = +(($("roundSel")&&$("roundSel").value)||10);
+  await sb.from("rooms").update({ status:"playing", total_rounds:rounds }).eq("id",S.room.id);
+  S.room.status="playing"; S.room.total_rounds=rounds; S.screen="mp_game"; render();
+}
+function leaveRoomLocal(){
+  if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
+  S.room=null; S.players=[]; S.isHost=false; S.screen="mode"; render();
+}
+async function leaveRoom(){
+  const roomId=S.room&&S.room.id;
+  try{
+    if(S.isHost){ await sb.from("rooms").update({status:"ended"}).eq("id",roomId); }
+    await sb.from("room_players").delete().eq("room_id",roomId).eq("user_id",S.user.id);
+  }catch(e){}
+  leaveRoomLocal();
+}
+function playerListHtml(){
+  return S.players.map(p=>`<div class="row rank-row">
+    <div style="display:flex;align-items:center;gap:8px">
+      <b>${esc(p.nickname)}</b>
+      ${p.user_id===S.room.host_id?'<span class="tier-chip tier2">방장</span>':''}
+      ${p.user_id===S.user.id?'<span class="muted sm">(나)</span>':''}
+    </div></div>`).join("");
+}
+function renderMpRoom(){
+  $("app").innerHTML = `
+  <div class="center"><div style="width:100%;max-width:440px">
+    <div class="row" style="margin-bottom:18px">
+      <div style="font-size:20px;font-weight:800">대기실</div>
+      <button id="leave" class="pill muted sm">나가기</button>
+    </div>
+    <div class="card" style="padding:20px;text-align:center;margin-bottom:16px">
+      <div class="muted sm">참가 코드</div>
+      <div class="mono" style="font-size:34px;font-weight:800;letter-spacing:.15em;margin-top:4px">${S.room.code}</div>
+      <button id="copy" class="pill sm gold" style="margin-top:8px">코드 복사</button>
+    </div>
+    <div class="card" style="padding:18px;margin-bottom:16px">
+      <div class="row" style="margin-bottom:6px"><b>참가자</b><span class="muted sm" id="pcount">${S.players.length}명</span></div>
+      <div id="playerList">${playerListHtml()}</div>
+    </div>
+    ${S.isHost ? `
+      <div class="card" style="padding:18px;margin-bottom:14px">
+        <div class="row"><span class="muted sm">라운드 수</span>
+          <span class="mono" id="rval" style="font-size:20px;font-weight:800">10</span></div>
+        <input id="roundSel" type="range" min="10" max="30" value="10" style="width:100%;margin-top:8px;accent-color:var(--gold)" />
+      </div>
+      <button id="start" class="btn-primary">게임 시작</button>`
+    : `<div class="ghost">방장이 시작하기를 기다리는 중…</div>`}
+  </div></div>`;
+  $("leave").onclick=leaveRoom;
+  $("copy").onclick=()=>{ try{navigator.clipboard.writeText(S.room.code);}catch(e){} $("copy").textContent="복사됨!"; };
+  if(S.isHost){
+    const sel=$("roundSel"); sel.oninput=()=>$("rval").textContent=sel.value;
+    $("start").onclick=startMpGame;
+  }
+}
+function renderMpGame(){
+  $("app").innerHTML = `
+  <div class="center"><div style="width:100%;max-width:440px;text-align:center">
+    <div class="tag">게임 시작</div>
+    <div style="font-size:44px;margin:12px 0">🎮</div>
+    <div style="font-size:18px;font-weight:800">방 ${S.room.code} · ${S.room.total_rounds}라운드</div>
+    <div class="card" style="padding:18px;margin-top:16px;text-align:left">
+      <div class="row" style="margin-bottom:6px"><b>참가자</b><span class="muted sm">${S.players.length}명</span></div>
+      ${playerListHtml()}
+    </div>
+    <div class="card sm muted" style="padding:14px 16px;margin-top:14px;line-height:1.6">
+      여기까지가 <b>2단계 A(로비)</b>입니다.<br>
+      모두에게 동시에 진행되는 라운드·주가·뉴스 동기화는 다음(2단계 B)에서 연결됩니다.
+    </div>
+    <button id="leave2" class="pill muted sm" style="margin-top:16px;width:100%;padding:12px">방 나가기</button>
+  </div></div>`;
+  $("leave2").onclick=leaveRoom;
 }
 
 /* ===================================================================
@@ -655,6 +820,9 @@ function render(){
     case "loading": return renderLoading();
     case "auth":    return renderAuth();
     case "mode":    return renderMode();
+    case "mp_entry":return renderMpEntry();
+    case "mp_room": return renderMpRoom();
+    case "mp_game": return renderMpGame();
     case "game":    return renderGame();
   }
 }
