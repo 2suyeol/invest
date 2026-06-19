@@ -11,7 +11,7 @@
     --bg:#0E1116; --surface:#161B22; --surface2:#1C232E; --line:#262E3A;
     --text:#E6E9EF; --muted:#8A94A6; --up:#2BD673; --down:#FF5C5C;
     --gold:#F5B642; --goldDim:#5A4A1E; --blue:#5B9DF5;
-    --buy:#FF5C5C; --sell:#5B9DF5;   /* 매수=빨강, 매도=파랑 */
+    --buy:#FF5C5C; --sell:#2BD673;   /* 매수=빨강, 매도=초록 */
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);min-height:100vh;
@@ -34,13 +34,13 @@
   .row{display:flex;align-items:center;justify-content:space-between}
   .badge{padding:2px 8px;border-radius:6px;font-size:12px;font-weight:800}
   .b-buy{background:rgba(255,92,92,.12);color:var(--buy)}
-  .b-sell{background:rgba(91,157,245,.14);color:var(--sell)}
+  .b-sell{background:rgba(43,214,115,.14);color:var(--sell)}
   .sm{font-size:12px} .lg{font-size:30px;font-weight:800}
   .stock-row,.news-row,.hold-row,.hist-row,.rank-row{border-top:1px solid var(--line);padding:12px 0}
   .tradebtn{padding:7px 13px;border-radius:9px;font-weight:800;font-size:14px;border:1px solid;transition:transform .05s}
   .tradebtn:active{transform:scale(.95)}
   .t-buy{background:rgba(255,92,92,.12);color:var(--buy);border-color:rgba(255,92,92,.28)}
-  .t-sell{background:rgba(91,157,245,.14);color:var(--sell);border-color:rgba(91,157,245,.30)}
+  .t-sell{background:rgba(43,214,115,.12);color:var(--sell);border-color:rgba(43,214,115,.30)}
   .minibtn{padding:5px 10px;border-radius:8px;font-weight:700;font-size:12px;border:1px solid var(--line);color:var(--muted);background:var(--bg)}
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;
     justify-content:center;padding:16px;z-index:50}
@@ -332,7 +332,7 @@ function renderModal(){
   const holdings = mp ? MP.holdings : G.holdings;
   const myCash = mp ? MP.cash : G.cash;
   const s=market.find(x=>x.t===t), buy=side==="buy";
-  const cost=s.p*qty, owned=holdings[t]?.shares||0, maxBuy=Math.floor(myCash/s.p);
+  const cost=s.p*qty, owned=holdings[t]?.shares||0, maxBuy=s.p>0?Math.floor(myCash/s.p):0;
   $("modal").innerHTML=`<div class="modal-bg" id="mbg"><div class="card" style="width:100%;max-width:360px;padding:22px" onclick="event.stopPropagation()">
     <div class="row" style="margin-bottom:16px"><div><div style="font-size:20px;font-weight:800">${s.t}
       <span class="badge ${buy?'b-buy':'b-sell'}">${buy?'매수':'매도'}</span></div><div class="muted sm">${esc(stockName(t))}</div></div>
@@ -363,7 +363,7 @@ function renderModal(){
 async function startGame(){
   S.screen="loading"; render();
   let st=null; try{ st=await loadSave(); }catch(e){}
-  if(st && st.market){ G=st; if(G.bank==null)G.bank=0; if(G.rate==null)G.rate=0.003; if(!G.events||!G.events.length) rollMarket(); }
+  if(st && st.market){ G=st; if(G.bank==null)G.bank=0; if(G.rate==null)G.rate=0.003; G.cash=Math.round(G.cash); G.bank=Math.round(G.bank); if(!G.events||!G.events.length) rollMarket(); }
   else { G={ cash:START_CASH, bank:0, rate:0.003, holdings:{}, history:[],
         market:STOCKS.map(s=>({...s, prev:s.p, base:s.p})), events:[], news:[], lastEventIds:[], timeLeft:TICK_SECONDS }; rollMarket(); }
   S.tab="stocks"; S.screen="game"; render();
@@ -382,13 +382,13 @@ function fmtTime(s){ return `0:${String(s).padStart(2,"0")}`; }
 function marketTick(){
   const evs=G.events.map(e=>EVENTS.find(x=>x.id===e.id)).filter(Boolean);
   const useObjs = G.events[0] && G.events[0].impact ? G.events : evs;
-  G.market.forEach(s=>{ let d=0; useObjs.forEach(ev=>{ if(ev.impact[s.sector]!=null) d+=ev.impact[s.sector]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5,s.p*(1+d)); });
-  if(G.bank>0) G.bank+=G.bank*G.rate;
+  G.market.forEach(s=>{ let d=0; useObjs.forEach(ev=>{ if(ev.impact[s.sector]!=null) d+=ev.impact[s.sector]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0,s.p*(1+d)); });
+  if(G.bank>0) G.bank=Math.round(G.bank*(1+G.rate));
   rollMarket(); G.timeLeft=TICK_SECONDS; saveGameBg(); render();
 }
 async function exitGame(){ if(!confirm("나가시겠어요? 진행 상황은 저장됩니다."))return; S.screen="loading"; render(); try{await saveGame();}catch(e){} clearInterval(timer); timer=null; S.screen="mode"; render(); }
 function execute(t,side,qty){
-  const s=G.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=s.p*qty;
+  const s=G.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=Math.round(s.p*qty);
   if(side==="buy"){ if(G.cash<cost){alert("현금이 부족합니다.");return;} G.cash-=cost; const h=G.holdings[t]||{shares:0,avgCost:0}; const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; G.holdings[t]=h; }
   else { const h=G.holdings[t]; if(!h||h.shares<qty){alert("보유 수량이 부족합니다.");return;} G.cash+=cost; h.shares-=qty; if(h.shares===0)delete G.holdings[t]; else G.holdings[t]=h; }
   G.history.unshift({id:Date.now(),t,side,qty,price:s.p,at:Date.now()}); G.history=G.history.slice(0,40);
@@ -472,7 +472,8 @@ function marketCard(mp){
     ${market.map(s=>{ const tk=s.p-s.prev, idp=(mp?'m':'')+ '';
       return `<div class="row stock-row"><div><div style="font-weight:700">${s.t} <span class="muted sm">${esc(stockName(s.t))}</span></div>
         <div class="muted sm">${esc(stockSector(s.t))}</div></div>
-        <div style="display:flex;align-items:center;gap:12px"><div style="text-align:right"><div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div></div>
+        <div style="display:flex;align-items:center;gap:12px"><div style="text-align:right"><div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div>
+          <div class="mono sm ${tk>=0?'up':'down'}">${pct(s.prev?(s.p-s.prev)/s.prev:0)}</div></div>
           <div style="display:flex;gap:6px">
             <button id="${mp?'mbuy':'buy'}-${s.t}" class="tradebtn t-buy">매수</button>
             <button id="${mp?'msell':'sell'}-${s.t}" class="tradebtn t-sell">매도</button></div></div></div>`; }).join("")}</div>`;
@@ -512,7 +513,7 @@ function bankPanel(cash, bank, rate, mp){
       <div class="muted sm" style="margin-top:8px">매 라운드 원금의 ${(LOAN_RATE*100).toFixed(0)}%가 이자로 붙습니다. 순위에선 누적 이자만큼 차감돼요.</div></div>`;
   }
   return `<div class="card" style="padding:18px">
-    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b><span class="blue sm mono">이자 ${mp?'1라운드':'1분'}당 ${(rate*100).toFixed(1)}%</span></div>
+    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b><span class="up sm mono">이자 ${mp?'1라운드':'1분'}당 ${(rate*100).toFixed(1)}%</span></div>
     <div class="grid2-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
       <div class="card" style="padding:12px;background:var(--bg)"><div class="muted sm">예치금</div><div class="mono" style="font-size:16px;font-weight:700;margin-top:2px">₩${won(bank)}</div></div>
       <div class="card" style="padding:12px;background:var(--bg)"><div class="muted sm">보유 현금</div><div class="mono" style="font-size:16px;font-weight:700;margin-top:2px">₩${won(cash)}</div></div></div>
@@ -640,8 +641,8 @@ function onRoomUpdate(room){
     if(S.screen!=="mp_game"){ enterMpGame(); return; }
     if(g && g.result && g.result.round>mpLastSettled){      // 라운드 정산(이자/대출이자)
       if(MP){
-        if(MP.bank>0) MP.bank += MP.bank*(g.endedRate||g.rate);
-        if(MP.loanPrincipal>0) MP.loanInterest += MP.loanPrincipal*LOAN_RATE;
+        if(MP.bank>0) MP.bank = Math.round(MP.bank*(1+(g.endedRate||g.rate)));
+        if(MP.loanPrincipal>0) MP.loanInterest += Math.round(MP.loanPrincipal*LOAN_RATE);
         mpSavePortfolio();
       }
       mpLastSettled=g.result.round;
@@ -679,7 +680,7 @@ async function mpAdvance(){
   if(g.phase==="intro"){ g.phase="live"; g.endsAt=Date.now()+g.roundSeconds*1000; S.room.game=g; await sb.from("rooms").update({game:g}).eq("id",S.room.id); return; }
   // live 종료 → 시세 변동 + 결과 집계
   const evs=g.events.map(id=>EVENTS.find(e=>e.id===id)).filter(Boolean);
-  g.market.forEach(s=>{ const sec=stockSector(s.t); let d=0; evs.forEach(ev=>{ if(ev.impact[sec]!=null) d+=ev.impact[sec]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5,s.p*(1+d)); });
+  g.market.forEach(s=>{ const sec=stockSector(s.t); let d=0; evs.forEach(ev=>{ if(ev.impact[sec]!=null) d+=ev.impact[sec]; }); d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0,s.p*(1+d)); });
   let upS=null,dnS=null; g.market.forEach(s=>{ const p=(s.p-s.prev)/s.prev; if(!upS||p>upS.pct)upS={t:s.t,pct:p}; if(!dnS||p<dnS.pct)dnS={t:s.t,pct:p}; });
   let leader=null; (S.players||[]).forEach(pl=>{ const nw=playerAssets(pl); if(!leader||nw>leader.nw)leader={nick:pl.nickname,nw}; });
   g.result={ round:g.round, topUp:upS, topDown:dnS, leader };
@@ -709,7 +710,7 @@ function playerAssets(pl){ let v=Number(pl.cash||0)+Number(pl.bank||0); const g=
 function playerRankWorth(pl){ return playerAssets(pl)-Number(pl.loan_interest||0); }
 function mpExecute(t,side,qty){
   const g=S.room.game; if(g.phase!=="live"){ alert("라운드 시작 후에 거래할 수 있어요."); return; }
-  const s=g.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=s.p*qty;
+  const s=g.market.find(x=>x.t===t); if(!s||qty<=0)return; const cost=Math.round(s.p*qty);
   if(side==="buy"){ if(MP.cash<cost){alert("현금이 부족합니다.");return;} MP.cash-=cost; const h=MP.holdings[t]||{shares:0,avgCost:0}; const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; MP.holdings[t]=h; }
   else { const h=MP.holdings[t]; if(!h||h.shares<qty){alert("보유 수량이 부족합니다.");return;} MP.cash+=cost; h.shares-=qty; if(h.shares===0)delete MP.holdings[t]; else MP.holdings[t]=h; }
   closeModal(); mpSavePortfolio(); render();
