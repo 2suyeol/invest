@@ -159,6 +159,7 @@ const $ = id => document.getElementById(id);
 let S = { screen:"loading", authTab:"login", user:null, nickname:null, tab:"stocks" };
 let G = null, timer = null, busy = false;
 let rtChannel = null;   // 멀티 모드 실시간 채널
+let MP = null, mpTimer = null, mpLastRound = 1, mpLastRate = 0.003; // 멀티 게임(내 지갑/타이머)
 
 /* ===================================================================
    부팅 / 인증 (Supabase)
@@ -402,11 +403,14 @@ async function enterRoom(){
   S.screen="mp_room"; render();
 }
 async function refreshPlayers(){
-  const { data } = await sb.from("room_players").select("user_id,nickname,joined_at").eq("room_id",S.room.id).order("joined_at");
+  const { data } = await sb.from("room_players").select("user_id,nickname,joined_at,cash,bank,holdings").eq("room_id",S.room.id).order("joined_at");
   S.players = data || [];
   if(S.screen==="mp_room"){
     const el=$("playerList"); if(el) el.innerHTML=playerListHtml();
     const c=$("pcount"); if(c) c.textContent=S.players.length+"명";
+  }
+  if(S.screen==="mp_game" && S.mpTab==="rank"){
+    const el=$("mpRankList"); if(el) el.innerHTML=mpRankListHtml();
   }
 }
 function subscribeRoom(roomId){
@@ -418,17 +422,131 @@ function subscribeRoom(roomId){
 }
 function onRoomUpdate(room){
   S.room=room;
-  if(room.status==="playing"){ S.screen="mp_game"; render(); }
-  else if(room.status==="ended"){ alert("방장이 방을 닫았습니다."); leaveRoomLocal(); }
+  if(room.status==="ended"){ alert("방장이 방을 닫았습니다."); leaveRoomLocal(); return; }
+  if(room.status==="finished"){
+    if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
+    S.screen="mp_result"; render(); return;
+  }
+  if(room.status==="playing"){
+    if(S.screen!=="mp_game"){ enterMpGame(); return; }
+    const g=room.game;
+    if(g && g.round>mpLastRound){           // 라운드가 넘어감 → 내 예금 이자 지급
+      if(MP && MP.bank>0){ MP.bank += MP.bank*mpLastRate; mpSavePortfolio(); }
+      mpLastRound=g.round;
+    }
+    if(g) mpLastRate=g.rate;
+    render(); return;
+  }
+  if(S.screen==="mp_room") render();          // 대기실 갱신
+}
+
+/* ---- 멀티 게임 진행 (방장이 시세/뉴스를 계산해 서버에 기록) ---- */
+function mpRoll(g){
+  let active;
+  for(let tn=0; tn<6; tn++){
+    const n=Math.random()<0.5?1:2; const pool=[...EVENTS]; active=[];
+    for(let i=0;i<n;i++) active.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
+    const ids=active.map(e=>e.id).sort().join(",");
+    if(ids!==(g.lastIds||[]).slice().sort().join(",")) break;
+  }
+  let rate=BASE_RATE;
+  active.forEach(ev=>{ if(ev.id==="rate_up") rate=0.006; else if(ev.id==="rate_down") rate=0.001; });
+  const used=active.map(e=>e.id), news=[];
+  active.forEach(ev=>{
+    news.push({tier:3, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t3)});
+    news.push({tier:2, company:pick(COMPANIES.slice(0,3)), text:pick(ev.t2)});
+    news.push({tier:1, company:pick(COMPANIES),          text:pick(ev.t1)});
+  });
+  EVENTS.filter(e=>!used.includes(e.id)).sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2))
+    .forEach(ev=> news.push({tier:1, company:"루머스", text:pick(ev.t1)}));
+  if(Math.random()<0.5){ const w=rate>BASE_RATE?"오르는":rate<BASE_RATE?"내리는":"잠잠한";
+    news.push({tier:2, company:pick(["한경데일리","머니투데이"]),
+      text:`은행 예금 금리, 최근 ${w} 분위기 — 현재 분당 약 ${(rate*100).toFixed(1)}% 수준`}); }
+  news.sort(()=>Math.random()-.5);
+  return { events:used, news, rate, ids:used };
 }
 async function startMpGame(){
   const rounds = +(($("roundSel")&&$("roundSel").value)||10);
-  await sb.from("rooms").update({ status:"playing", total_rounds:rounds }).eq("id",S.room.id);
-  S.room.status="playing"; S.room.total_rounds=rounds; S.screen="mp_game"; render();
+  const g={ round:1, total:rounds, market:STOCKS.map(s=>({t:s.t,p:s.p,prev:s.p})), lastIds:[] };
+  const roll=mpRoll(g); g.events=roll.events; g.news=roll.news; g.rate=roll.rate; g.lastIds=roll.ids;
+  g.endsAt=Date.now()+TICK_SECONDS*1000;
+  await sb.from("rooms").update({ status:"playing", total_rounds:rounds, game:g }).eq("id",S.room.id);
+  S.room.status="playing"; S.room.total_rounds=rounds; S.room.game=g;
+  await enterMpGame();
 }
+async function enterMpGame(){
+  await mpLoadPortfolio();
+  mpLastRound = S.room.game.round;
+  mpLastRate  = S.room.game.rate;
+  if(!mpTimer) mpTimer=setInterval(mpTick,1000);
+  S.mpTab="stocks"; S.screen="mp_game"; render();
+}
+function mpTick(){
+  const g=S.room&&S.room.game; if(!g||S.room.status!=="playing") return;
+  if(S.isHost && Date.now()>=g.endsAt){ mpAdvance(); return; }
+  const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
+  const el=$("mtimer"); if(el) el.textContent=fmtTime(left);
+  const bar=$("mtimerfill"); if(bar) bar.style.width=Math.max(0,Math.min(100,(g.endsAt-Date.now())/(TICK_SECONDS*1000)*100))+"%";
+}
+async function mpAdvance(){
+  const g=JSON.parse(JSON.stringify(S.room.game));
+  const evs=g.events.map(id=>EVENTS.find(e=>e.id===id)).filter(Boolean);
+  g.market.forEach(s=>{
+    const stock=STOCKS.find(x=>x.t===s.t); let d=0;
+    evs.forEach(ev=>{ if(ev.impact[stock.sector]!=null) d+=ev.impact[stock.sector]; });
+    d+=rand(-0.04,0.04); s.prev=s.p; s.p=Math.max(0.5, s.p*(1+d));
+  });
+  if(g.round>=g.total){
+    await sb.from("rooms").update({ status:"finished", game:g }).eq("id",S.room.id);
+    S.room.status="finished"; S.room.game=g;
+    if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
+    S.screen="mp_result"; render(); return;
+  }
+  g.round++;
+  const roll=mpRoll(g); g.events=roll.events; g.news=roll.news; g.rate=roll.rate; g.lastIds=roll.ids;
+  g.endsAt=Date.now()+TICK_SECONDS*1000;
+  S.room.game=g;   // 즉시 반영해 다음 tick의 중복 진행 방지
+  await sb.from("rooms").update({ game:g }).eq("id",S.room.id);
+}
+/* ---- 내 지갑 (room_players 행) ---- */
+async function mpLoadPortfolio(){
+  const { data } = await sb.from("room_players").select("cash,bank,holdings")
+    .eq("room_id",S.room.id).eq("user_id",S.user.id).maybeSingle();
+  MP = data ? { cash:Number(data.cash), bank:Number(data.bank||0), holdings:data.holdings||{} }
+            : { cash:START_CASH, bank:0, holdings:{} };
+}
+async function mpSavePortfolio(){
+  if(!MP) return;
+  try{ await sb.from("room_players").update({ cash:Math.round(MP.cash), bank:Math.round(MP.bank), holdings:MP.holdings })
+    .eq("room_id",S.room.id).eq("user_id",S.user.id); }catch(e){}
+}
+function mpNetWorth(pf){
+  let v=Number(pf.cash||0)+Number(pf.bank||0);
+  const g=S.room.game;
+  for(const[t,h] of Object.entries(pf.holdings||{})){ const s=g.market.find(x=>x.t===t); if(s&&h) v+=s.p*h.shares; }
+  return v;
+}
+function mpExecute(t,side,qty){
+  const g=S.room.game, s=g.market.find(x=>x.t===t); if(!s||qty<=0) return;
+  const cost=s.p*qty;
+  if(side==="buy"){
+    if(MP.cash<cost){ alert("현금이 부족합니다."); return; }
+    MP.cash-=cost; const h=MP.holdings[t]||{shares:0,avgCost:0};
+    const ns=h.shares+qty; h.avgCost=(h.avgCost*h.shares+cost)/ns; h.shares=ns; MP.holdings[t]=h;
+  } else {
+    const h=MP.holdings[t]; if(!h||h.shares<qty){ alert("보유 수량이 부족합니다."); return; }
+    MP.cash+=cost; h.shares-=qty; if(h.shares===0) delete MP.holdings[t]; else MP.holdings[t]=h;
+  }
+  closeModal(); mpSavePortfolio(); render();
+}
+function mpDeposit(amt){ amt=Math.floor(amt); if(!amt||amt<=0) return;
+  if(MP.cash<amt){ alert("현금이 부족합니다."); return; } MP.cash-=amt; MP.bank+=amt; mpSavePortfolio(); render(); }
+function mpWithdraw(amt){ amt=Math.floor(amt); if(!amt||amt<=0) return;
+  if(MP.bank<amt){ alert("예치금이 부족합니다."); return; } MP.bank-=amt; MP.cash+=amt; mpSavePortfolio(); render(); }
 function leaveRoomLocal(){
   if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; }
-  S.room=null; S.players=[]; S.isHost=false; S.screen="mode"; render();
+  if(mpTimer){ clearInterval(mpTimer); mpTimer=null; }
+  MP=null; S.room=null; S.players=[]; S.isHost=false; S.screen="mode"; render();
 }
 async function leaveRoom(){
   const roomId=S.room&&S.room.id;
@@ -479,22 +597,147 @@ function renderMpRoom(){
   }
 }
 function renderMpGame(){
+  S.mpTab = S.mpTab || "stocks";
+  const tabBtn=(id,label)=>`<button class="navtab ${S.mpTab===id?'on':'off'}" data-mtab="${id}">${label}</button>`;
+  const nav=`<div class="nav"><div class="wrap row" style="padding:10px 16px">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="tag">방 ${S.room.code}</span>
+      <div style="display:flex;gap:4px">${tabBtn("stocks","주식")}${tabBtn("rank","랭킹")}</div>
+    </div>
+    <button id="leave2" class="pill sm muted">나가기</button>
+  </div></div>`;
+  const content = S.mpTab==="rank" ? mpRankView() : mpStocksView();
+  $("app").innerHTML = nav + `<div class="wrap" style="padding-top:14px;padding-bottom:40px">${content}</div>`;
+  document.querySelectorAll(".navtab").forEach(b=>b.onclick=()=>{ S.mpTab=b.dataset.mtab; render(); });
+  $("leave2").onclick=leaveRoom;
+  if(S.mpTab==="stocks") mpBindStocks();
+}
+function mpStocksView(){
+  const g=S.room.game; if(!g||!MP) return `<div class="ghost">불러오는 중…</div>`;
+  const total=mpNetWorth(MP), pl=total-START_CASH, plp=pl/START_CASH, up=pl>=0;
+  const left=Math.max(0,Math.ceil((g.endsAt-Date.now())/1000));
+  return `
+    <div class="row" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+      <div><div class="muted sm">내 총자산 · 라운드 ${g.round}/${g.total}</div>
+        <div style="display:flex;align-items:baseline;gap:12px">
+          <span class="mono lg">₩${won(total)}</span>
+          <span class="mono ${up?'up':'down'}">${pct(plp)}</span></div></div>
+      <div style="text-align:right">
+        <div class="mono" style="font-size:22px;font-weight:800" id="mtimer">${fmtTime(left)}</div>
+        <div class="muted sm">⏱ 라운드 종료까지</div></div>
+    </div>
+    <div class="timerbar"><i id="mtimerfill" style="width:${left/TICK_SECONDS*100}%"></i></div>
+    <div class="cols" style="margin-top:14px">
+      <div>${mpMarketCard()}${mpHoldingsCard()}</div>
+      <div>${mpBankCard()}${mpNewsCard()}</div>
+    </div>`;
+}
+function mpBindStocks(){
+  S.room.game.market.forEach(s=>{
+    const b=$("mbuy-"+s.t), sl=$("msell-"+s.t);
+    if(b) b.onclick=()=>openTrade(s.t,"buy",true);
+    if(sl) sl.onclick=()=>openTrade(s.t,"sell",true);
+  });
+  const dep=$("mbankDep"), wd=$("mbankWd");
+  if(dep) dep.onclick=()=>mpDeposit(+$("mbankAmt").value);
+  if(wd) wd.onclick=()=>mpWithdraw(+$("mbankAmt").value);
+}
+function mpMarketCard(){
+  const g=S.room.game;
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:6px"><b>시장</b><span class="muted sm">모두 같은 시세 · 라운드마다 변동</span></div>
+    ${g.market.map(s=>{
+      const st=STOCKS.find(x=>x.t===s.t), tk=s.p-s.prev;
+      return `<div class="row stock-row">
+        <div><div style="font-weight:700">${s.t} <span class="muted sm">${st.name}</span></div>
+          <div class="muted sm">${st.sector}</div></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="text-align:right"><div class="mono ${tk>=0?'up':'down'}">${price(s.p)}</div></div>
+          <div style="display:flex;gap:6px">
+            <button id="mbuy-${s.t}" class="tradebtn t-buy">매수</button>
+            <button id="msell-${s.t}" class="tradebtn t-sell">매도</button></div>
+        </div></div>`;
+    }).join("")}</div>`;
+}
+function mpHoldingsCard(){
+  const g=S.room.game, hs=Object.entries(MP.holdings);
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:6px"><b>보유 종목</b></div>
+    ${hs.length===0 ? `<div class="ghost">아직 보유한 종목이 없습니다.</div>` :
+    hs.map(([t,h])=>{
+      const s=g.market.find(x=>x.t===t), cur=s?s.p:h.avgCost;
+      const plv=(cur-h.avgCost)*h.shares, plp=(cur-h.avgCost)/h.avgCost, up=plv>=0;
+      return `<div class="row hold-row">
+        <div><div style="font-weight:700">${t}</div>
+          <div class="muted sm mono">${h.shares}주 · 평단 ${price(h.avgCost)}</div></div>
+        <div style="text-align:right"><div class="mono">₩${won(cur*h.shares)}</div>
+          <div class="mono sm ${up?'up':'down'}">${up?'+':''}${won(plv)} (${pct(plp)})</div></div>
+      </div>`;
+    }).join("")}</div>`;
+}
+function mpBankCard(){
+  const g=S.room.game;
+  return `<div class="card" style="padding:18px;margin-bottom:16px">
+    <div class="row" style="margin-bottom:8px"><b>🏦 은행</b>
+      <span class="blue sm mono">이자 1라운드당 ${(g.rate*100).toFixed(1)}%</span></div>
+    <div class="row" style="margin-bottom:10px"><span class="muted sm">예치금</span>
+      <span class="mono" style="font-size:17px;font-weight:700">₩${won(MP.bank||0)}</span></div>
+    <input id="mbankAmt" class="field" type="number" placeholder="금액 입력" style="margin-top:0" />
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button id="mbankDep" class="tradebtn t-buy" style="flex:1;text-align:center">입금</button>
+      <button id="mbankWd" class="tradebtn t-sell" style="flex:1;text-align:center">출금</button></div>
+  </div>`;
+}
+function mpNewsCard(){
+  const g=S.room.game, tl={1:"1단계",2:"2단계",3:"3단계"};
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:6px"><b>뉴스</b><span class="muted sm">방 전체 공통</span></div>
+    ${(g.news||[]).map(n=>`<div class="news-row">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span class="tier-chip tier${n.tier}">${tl[n.tier]}</span>
+          <span class="muted sm">${n.company}</span></div>
+        <div style="margin-top:7px;font-size:14px;line-height:1.5">${n.text}</div>
+      </div>`).join("")}</div>`;
+}
+function mpRankListHtml(){
+  const rows=[...S.players].map(p=>({nick:p.nickname, uid:p.user_id, nw:mpNetWorth(p)})).sort((a,b)=>b.nw-a.nw);
+  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
+  return rows.map((r,i)=>{
+    const me=r.uid===S.user.id;
+    return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
+        <b>${esc(r.nick)}${me?' (나)':''}</b></div>
+      <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`;
+  }).join("");
+}
+function mpRankView(){
+  return `<div class="card" style="padding:18px">
+    <div class="row" style="margin-bottom:6px"><b>실시간 순위</b><span class="muted sm">방 ${S.room.code}</span></div>
+    <div id="mpRankList">${mpRankListHtml()}</div>
+  </div>`;
+}
+function renderMpResult(){
+  const rows=[...S.players].map(p=>({nick:p.nickname, uid:p.user_id, nw:mpNetWorth(p)})).sort((a,b)=>b.nw-a.nw);
+  const myRank=rows.findIndex(r=>r.uid===S.user.id)+1;
+  const medal=i=>["🥇","🥈","🥉"][i]||`${i+1}`;
   $("app").innerHTML = `
   <div class="center"><div style="width:100%;max-width:440px;text-align:center">
-    <div class="tag">게임 시작</div>
-    <div style="font-size:44px;margin:12px 0">🎮</div>
-    <div style="font-size:18px;font-weight:800">방 ${S.room.code} · ${S.room.total_rounds}라운드</div>
-    <div class="card" style="padding:18px;margin-top:16px;text-align:left">
-      <div class="row" style="margin-bottom:6px"><b>참가자</b><span class="muted sm">${S.players.length}명</span></div>
-      ${playerListHtml()}
+    <div class="tag">게임 종료</div>
+    <div style="font-size:44px;margin:10px 0">${myRank===1?'👑':'🏁'}</div>
+    <div style="font-size:18px;font-weight:800">최종 순위 ${myRank}위 / ${rows.length}명</div>
+    <div class="card" style="padding:18px;margin-top:18px;text-align:left">
+      ${rows.map((r,i)=>{ const me=r.uid===S.user.id;
+        return `<div class="row rank-row" style="${me?'background:rgba(245,182,66,.06);border-radius:8px':''}">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="width:24px;text-align:center;font-weight:800">${medal(i)}</span>
+            <b>${esc(r.nick)}${me?' (나)':''}</b></div>
+          <span class="mono ${r.nw>=START_CASH?'up':'down'}">₩${won(r.nw)}</span></div>`;
+      }).join("")}
     </div>
-    <div class="card sm muted" style="padding:14px 16px;margin-top:14px;line-height:1.6">
-      여기까지가 <b>2단계 A(로비)</b>입니다.<br>
-      모두에게 동시에 진행되는 라운드·주가·뉴스 동기화는 다음(2단계 B)에서 연결됩니다.
-    </div>
-    <button id="leave2" class="pill muted sm" style="margin-top:16px;width:100%;padding:12px">방 나가기</button>
+    <button id="leave3" class="btn-primary" style="margin-top:20px">나가기</button>
   </div></div>`;
-  $("leave2").onclick=leaveRoom;
+  $("leave3").onclick=leaveRoom;
 }
 
 /* ===================================================================
@@ -763,24 +1006,28 @@ async function loadLeaderboard(){
 
 /* ---------- 거래 모달 ---------- */
 let modalState=null;
-function openTrade(t, side){
-  modalState={t,side,qty:1};
+function openTrade(t, side, mp){
+  modalState={t,side,qty:1,mp:!!mp};
   const wrap=document.createElement("div"); wrap.id="modal"; document.body.appendChild(wrap);
   renderModal();
 }
 function closeModal(){ const m=$("modal"); if(m) m.remove(); modalState=null; }
 function renderModal(){
   if(!modalState) return;
-  const {t,side,qty}=modalState;
-  const s=G.market.find(x=>x.t===t), buy=side==="buy";
-  const cost=s.p*qty, owned=G.holdings[t]?.shares||0, maxBuy=Math.floor(G.cash/s.p);
+  const {t,side,qty,mp}=modalState;
+  const market = mp ? S.room.game.market : G.market;
+  const holdings = mp ? MP.holdings : G.holdings;
+  const myCash = mp ? MP.cash : G.cash;
+  const s=market.find(x=>x.t===t), buy=side==="buy";
+  const sname = mp ? (STOCKS.find(x=>x.t===t)||{}).name : s.name;
+  const cost=s.p*qty, owned=holdings[t]?.shares||0, maxBuy=Math.floor(myCash/s.p);
   $("modal").innerHTML=`
   <div class="modal-bg" id="mbg">
     <div class="card" style="width:100%;max-width:360px;padding:22px" onclick="event.stopPropagation()">
       <div class="row" style="margin-bottom:16px">
         <div><div style="font-size:20px;font-weight:800">${s.t}
           <span class="badge ${buy?'b-buy':'b-sell'}">${buy?'매수':'매도'}</span></div>
-          <div class="muted sm">${s.name}</div></div>
+          <div class="muted sm">${sname}</div></div>
         <button id="mx" class="muted" style="font-size:20px">✕</button></div>
       <div class="row" style="margin-bottom:14px"><span class="muted sm">현재가</span>
         <span class="mono" style="font-size:18px;font-weight:700">${price(s.p)}</span></div>
@@ -798,7 +1045,7 @@ function renderModal(){
       <button id="mgo" class="btn-primary" style="background:${buy?'var(--up)':'var(--down)'};color:#0E1116">
         ${qty}주 ${buy?'매수':'매도'}</button>
       <div class="muted sm" style="text-align:center;margin-top:10px">
-        ${buy?`보유 현금 ₩${won(G.cash)}`:`보유 수량 ${owned}주`}</div>
+        ${buy?`보유 현금 ₩${won(myCash)}`:`보유 수량 ${owned}주`}</div>
     </div>
   </div>`;
   $("mbg").onclick=closeModal;
@@ -807,7 +1054,7 @@ function renderModal(){
   $("mp").onclick=()=>{ modalState.qty=qty+1; renderModal(); };
   $("mq").oninput=e=>{ modalState.qty=Math.max(1,parseInt(e.target.value)||1); };
   document.querySelectorAll(".qbtn").forEach(b=>b.onclick=()=>{ modalState.qty=Math.max(1,+b.dataset.q); renderModal(); });
-  $("mgo").onclick=()=>execute(t,side,modalState.qty);
+  $("mgo").onclick=()=> mp ? mpExecute(t,side,modalState.qty) : execute(t,side,modalState.qty);
 }
 
 /* ===================================================================
@@ -823,6 +1070,7 @@ function render(){
     case "mp_entry":return renderMpEntry();
     case "mp_room": return renderMpRoom();
     case "mp_game": return renderMpGame();
+    case "mp_result": return renderMpResult();
     case "game":    return renderGame();
   }
 }
